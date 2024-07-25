@@ -25,7 +25,7 @@ func staticServerConfiguration(ctx *ConnectionContext) *map[string]string {
 }
 
 // group the auth and config messages into one write
-func buildConfigPacket(ctx *ConnectionContext) []byte {
+func configPacketShim(ctx *ConnectionContext) []byte {
 	buffer := make([]byte, 1024)
 	idx := 0
 	serverConfig := staticServerConfiguration(ctx)
@@ -46,6 +46,25 @@ func buildConfigPacket(ctx *ConnectionContext) []byte {
 	return buffer[:idx]
 }
 
+func queryResponsePackShim() []byte {
+	buffer := make([]byte, 1024)
+	rowDescriptionMessage := protocol.BuildRowDescriptionMessage(
+		map[string][]int{
+			"?column?": {0, 0, 0x17, 4, -1, 0},
+		},
+	)
+	dataRowMessage := protocol.BuildDataRowMessage([][]byte{{0x31}})
+	commandCompleteMessage := protocol.BuildCommandCompleteMessage("SELECT 1")
+	readyForQueryMessage := protocol.BuildReadyForQueryMessage(byte('I'))
+
+	idx := utils.WriteBytes(buffer, 0, rowDescriptionMessage.Pack())
+	idx = utils.WriteBytes(buffer, idx, dataRowMessage.Pack())
+	idx = utils.WriteBytes(buffer, idx, commandCompleteMessage.Pack())
+	idx = utils.WriteBytes(buffer, idx, readyForQueryMessage.Pack())
+
+	return buffer[:idx]
+}
+
 func ConnectionLoop(conn net.Conn) {
 	raw_message, err := protocol.GetRawStartupMessage(conn)
 	if err != nil {
@@ -60,7 +79,7 @@ func ConnectionLoop(conn net.Conn) {
 	}
 
 	ctx := NewConnectionContext(startMessage)
-	conn.Write(buildConfigPacket(ctx))
+	conn.Write(configPacketShim(ctx))
 
 	for {
 		raw_message, err := protocol.GetRawMessage(conn)
@@ -78,22 +97,7 @@ func ConnectionLoop(conn net.Conn) {
 			}
 			fmt.Println("Query: ", queryMessage.Query)
 
-			buffer := make([]byte, 1024)
-			rowDescriptionMessage := protocol.BuildRowDescriptionMessage(
-				map[string][]int{
-					"?column?": {0, 0, 0x17, 4, -1, 0},
-				},
-			)
-			dataRowMessage := protocol.BuildDataRowMessage([][]byte{{0x31}})
-			commandCompleteMessage := protocol.BuildCommandCompleteMessage("SELECT 1")
-			readyForQueryMessage := protocol.BuildReadyForQueryMessage(byte('I'))
-
-			idx := utils.WriteBytes(buffer, 0, rowDescriptionMessage.Pack())
-			idx = utils.WriteBytes(buffer, idx, dataRowMessage.Pack())
-			idx = utils.WriteBytes(buffer, idx, commandCompleteMessage.Pack())
-			idx = utils.WriteBytes(buffer, idx, readyForQueryMessage.Pack())
-
-			conn.Write(buffer[:idx])
+			conn.Write(queryResponsePackShim())
 		default:
 			fmt.Println("Unknown message kind: ", raw_message.Kind)
 		}
