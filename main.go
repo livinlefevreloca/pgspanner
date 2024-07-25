@@ -20,11 +20,6 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
-		go handleConn(conn)
+		go connection.ConnectionLoop(conn)
 	}
-}
-
-func handleConn(conn net.Conn) {
-	defer conn.Close()
-	connection.ConnectionLoop(conn)
 }

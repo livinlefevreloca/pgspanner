@@ -8,8 +8,9 @@ import (
 
 // Frontend Message kinds
 const (
-	FMESSAGE_STARTUP = -1
-	FMESSAGE_QUERY   = 81
+	FMESSAGE_STARTUP   = -1
+	FMESSAGE_QUERY     = 81
+	FMESSAGE_TERMINATE = 88
 )
 
 // StartupMessage represents the message sent by the client to start the connection

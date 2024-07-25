@@ -66,6 +66,7 @@ func queryResponsePackShim() []byte {
 }
 
 func ConnectionLoop(conn net.Conn) {
+	defer conn.Close()
 	raw_message, err := protocol.GetRawStartupMessage(conn)
 	if err != nil {
 		fmt.Println("Error: ", err)
@@ -98,9 +99,12 @@ func ConnectionLoop(conn net.Conn) {
 			fmt.Println("Query: ", queryMessage.Query)
 
 			conn.Write(queryResponsePackShim())
+			break
+		case protocol.FMESSAGE_TERMINATE:
+			fmt.Println("Terminating connection")
+			return
 		default:
 			fmt.Println("Unknown message kind: ", raw_message.Kind)
 		}
 	}
-
 }

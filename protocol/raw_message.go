@@ -73,6 +73,9 @@ func GetRawMessage(conn net.Conn) (*RawMessage, error) {
 
 	toRead := length - 4
 	data := make([]byte, toRead)
+	if toRead == 0 {
+		return &RawMessage{kind, length, data}, nil
+	}
 	_, err = io.ReadFull(conn, data)
 	if err != nil {
 		return nil, err
