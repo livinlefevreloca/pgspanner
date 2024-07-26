@@ -1,0 +1,17 @@
+logLevel = "Debug"
+ListenPort = 8000
+ListenAddress = "localhost"
+
+# Database Configuration for "lyfe"
+[[databases]]
+name = "lyfe"
+ssl = false
+shouldPool = false
+authMethod = "md5"
+
+[[databases.clusters]]
+name = "lyfe"
+host = "main-postgres.dlaw"
+port = 5432
+user = "postgres"
+passwordEnv = "PG_PASSWORD"

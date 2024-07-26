@@ -55,7 +55,7 @@ func WriteInt16(data []byte, idx int, value int) int {
 	return idx + 2
 }
 
-func WriteCString(data []byte, idx int, value []byte) int {
+func WriteCString(data []byte, idx int, value string) int {
 	copy(data[idx:], value)
 	data[idx+len(value)] = 0
 	return idx + len(value) + 1

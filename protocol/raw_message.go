@@ -7,14 +7,14 @@ import (
 	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
-// Raw message is a low level representation of a message
+// RawPgMessage is a low level representation of a message
 // containing the kind of message, the length of the message
 // and the raw bytes. Generally we read a raw message from
 // a connection and then Unpack it into a higher level message
 //
-// RawMessage still implements the Message interface as it can
+// RawPgMessage still implements the Message interface as it can
 // be useful to pass it around generically
-type RawMessage struct {
+type RawPgMessage struct {
 	Kind   int
 	Length int
 	Data   []byte
@@ -31,7 +31,7 @@ func handleSSLRequest(conn net.Conn) error {
 	return nil
 }
 
-func GetRawStartupMessage(conn net.Conn) (*RawMessage, error) {
+func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
 	length, err := utils.ReadInt32(conn)
 	if err != nil {
 		return nil, err
@@ -54,11 +54,11 @@ func GetRawStartupMessage(conn net.Conn) (*RawMessage, error) {
 		return nil, err
 	}
 
-	return &RawMessage{FMESSAGE_STARTUP, messageLength, ctxData}, nil
+	return &RawPgMessage{FMESSAGE_STARTUP, messageLength, ctxData}, nil
 }
 
 // Reads a raw message from a connection
-func GetRawMessage(conn net.Conn) (*RawMessage, error) {
+func GetRawPgMessage(conn net.Conn) (*RawPgMessage, error) {
 	header := make([]byte, 5)
 	_, err := io.ReadFull(conn, header)
 	if err != nil {
@@ -74,33 +74,33 @@ func GetRawMessage(conn net.Conn) (*RawMessage, error) {
 	toRead := length - 4
 	data := make([]byte, toRead)
 	if toRead == 0 {
-		return &RawMessage{kind, length, data}, nil
+		return &RawPgMessage{kind, length, data}, nil
 	}
 	_, err = io.ReadFull(conn, data)
 	if err != nil {
 		return nil, err
 	}
 
-	return &RawMessage{kind, length, data}, nil
+	return &RawPgMessage{kind, length, data}, nil
 }
 
-// Message interface implementation for RawMessage
-func (rm RawMessage) Unpack(data []byte) RawMessage {
+// Message interface implementation for RawPgMessage
+func (rm RawPgMessage) Unpack(data []byte) RawPgMessage {
 	idx := 0
 	kind := int(data[idx])
 	idx, length := utils.ParseInt32(data, idx+1)
 	data = data[idx+1:]
-	return RawMessage{kind, length, data}
 
+	return RawPgMessage{kind, length, data}
 }
 
-func (rm RawMessage) Pack() []byte {
+func (rm RawPgMessage) Pack() []byte {
 	out := make([]byte, rm.Length+1)
-	idx := 0
 
+	idx := 0
 	idx = utils.WriteByte(out, idx, byte(rm.Kind))
-	idx = utils.WriteInt32(out, idx+1, rm.Length)
-	idx = utils.WriteBytes(out, idx, rm.Data)
+	idx = utils.WriteInt32(out, idx, rm.Length)
+	utils.WriteBytes(out, idx, rm.Data)
 
 	return out
 }

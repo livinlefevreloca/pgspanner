@@ -2,10 +2,10 @@ package protocol
 
 import "github.com/livinlefevreloca/pgspanner/utils"
 
-// Backend Message kinds
+// Backend Postgres Message kinds
 const (
 	BMESSAGE_ROW_DESCRIPTION  = 84
-	BMESSAGE_AUTH_OK          = 82
+	BMESSAGE_AUTH             = 82
 	BMESSAGE_PARAMETER_STATUS = 83
 	BMESSAGE_BACKEND_KEY_DATA = 75
 	BMESSAGE_READY_FOR_QUERY  = 90
@@ -13,37 +13,74 @@ const (
 	BMESSAGE_DATA_ROW         = 68
 )
 
-// AuthenticationOkMessage represents the message sent by the server to indicate that the authentication was successful
-type AuthenticationOkMessage struct{}
+const (
+	AUTH_OK           = 0
+	AUTH_MD5_PASSWORD = 5
+)
 
-// Build a new AuthenticationOkMessage
-func BuildAuthenticationOkMessage() *AuthenticationOkMessage {
-	return &AuthenticationOkMessage{}
+// AuthenticationOkPgMessage represents the message sent by the server to indicate that the authentication was successful
+type AuthenticationOkPgMessage struct{}
+
+// Build a new AuthenticationOkPgMessage
+func BuildAuthenticationOkPgMessage() *AuthenticationOkPgMessage {
+	return &AuthenticationOkPgMessage{}
 }
 
-// Message interface implementation for AuthenticationOkMessage
-func (m *AuthenticationOkMessage) Unpack(message *RawMessage) (*AuthenticationOkMessage, error) {
-	return &AuthenticationOkMessage{}, nil
+// Postgres Message interface implementation for AuthenticationOkPgMessage
+func (m *AuthenticationOkPgMessage) Unpack(message *RawPgMessage) (*AuthenticationOkPgMessage, error) {
+	return &AuthenticationOkPgMessage{}, nil
 }
 
-func (m *AuthenticationOkMessage) Pack() []byte {
+func (m *AuthenticationOkPgMessage) Pack() []byte {
 	messageLength := 4 + 4               // length + null
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
-	out[0] = byte(BMESSAGE_AUTH_OK)
-	idx := utils.WriteInt32(out, 1, messageLength)
-	_ = utils.WriteInt32(out, idx, 0)
+	idx := 0
+	idx = utils.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = utils.WriteInt32(out, 1, messageLength)
+	utils.WriteInt32(out, idx, 0)
 
 	return out
 }
 
-// RowDescriptionMessage represents the message sent by the server to describe the fields of a row
-type RowDescriptionMessage struct {
+type AuthenticationMD5PasswordPgMessage struct {
+	inidicator int
+	Salt       []byte
+}
+
+func BuildAuthenticationMD5PasswordPgMessage(salt []byte) *AuthenticationMD5PasswordPgMessage {
+	return &AuthenticationMD5PasswordPgMessage{5, salt}
+}
+
+// Postgres Message interface implementation for AuthenticationMD5PasswordPgMessage
+func (m *AuthenticationMD5PasswordPgMessage) Unpack(message *RawPgMessage) (*AuthenticationMD5PasswordPgMessage, error) {
+	idx := 0
+	idx, m.inidicator = utils.ParseInt32(message.Data, idx)
+	idx, m.Salt = utils.ParseBytes(message.Data, idx, 4)
+
+	return m, nil
+}
+
+func (m *AuthenticationMD5PasswordPgMessage) Pack() []byte {
+	messageLength := 4 + 4 + 4 // length + indicator + salt
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = utils.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = utils.WriteInt32(out, idx, messageLength)
+	idx = utils.WriteInt32(out, idx, m.inidicator)
+	utils.WriteBytes(out, idx, m.Salt)
+
+	return out
+}
+
+// RowDescriptionPgMessage represents the message sent by the server to describe the fields of a row
+type RowDescriptionPgMessage struct {
 	Fields []FieldDescription
 }
 
-// Build a new RowDescriptionMessage
-func BuildRowDescriptionMessage(fieldsMap map[string][]int) *RowDescriptionMessage {
+// Build a new RowDescriptionPgMessage
+func BuildRowDescriptionPgMessage(fieldsMap map[string][]int) *RowDescriptionPgMessage {
 	var fields []FieldDescription
 	for name, fieldData := range fieldsMap {
 		field := buildFieldDescription(
@@ -57,11 +94,11 @@ func BuildRowDescriptionMessage(fieldsMap map[string][]int) *RowDescriptionMessa
 		)
 		fields = append(fields, *field)
 	}
-	return &RowDescriptionMessage{fields}
+	return &RowDescriptionPgMessage{fields}
 }
 
-// Message interface implementation for RowDescriptionMessage
-func (m *RowDescriptionMessage) Unpack(message *RawMessage) (*RowDescriptionMessage, error) {
+// PostgresMessage interface implementation for RowDescriptionPgMessage
+func (m *RowDescriptionPgMessage) Unpack(message *RawPgMessage) (*RowDescriptionPgMessage, error) {
 	idx := 0
 	idx, fieldCount := utils.ParseInt16(message.Data, idx)
 
@@ -75,25 +112,26 @@ func (m *RowDescriptionMessage) Unpack(message *RawMessage) (*RowDescriptionMess
 		idx += consumed
 	}
 
-	return &RowDescriptionMessage{fields}, nil
+	m.Fields = fields
+
+	return m, nil
 }
 
-func (m RowDescriptionMessage) Pack() []byte {
+func (m RowDescriptionPgMessage) Pack() []byte {
 	messageLength := 4 + 2 // length + field count
 	for _, field := range m.Fields {
 		messageLength += field.byteLength()
 	}
 
 	out := make([]byte, messageLength+1) // +1 for the kind of message
-	idx := 0
 
+	idx := 0
 	// Write the kind of message
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_ROW_DESCRIPTION))
 	// Write the length of the message
 	idx = utils.WriteInt32(out, idx, messageLength)
 	// Write the number of fields
 	idx = utils.WriteInt16(out, idx, len(m.Fields))
-
 	for _, field := range m.Fields {
 		fieldBytes := field.Pack()
 		idx = utils.WriteBytes(out, idx, fieldBytes)
@@ -161,16 +199,16 @@ func buildFieldDescription(
 	}
 }
 
-// DataRowMessage represents the message sent by the server to send a row of data
-type DataRowMessage struct {
+// DataRowPgMessage represents the message sent by the server to send a row of data
+type DataRowPgMessage struct {
 	Values [][]byte
 }
 
-func BuildDataRowMessage(values [][]byte) *DataRowMessage {
-	return &DataRowMessage{values}
+func BuildDataRowPgMessage(values [][]byte) *DataRowPgMessage {
+	return &DataRowPgMessage{values}
 }
 
-func (m *DataRowMessage) getByteLength() int {
+func (m *DataRowPgMessage) getByteLength() int {
 	var messageLength int
 	for _, value := range m.Values {
 		messageLength += 4 + len(value)
@@ -178,11 +216,10 @@ func (m *DataRowMessage) getByteLength() int {
 	return messageLength
 }
 
-// Message interface implementation for DataRowMessage
-func (m *DataRowMessage) Unpack(message *RawMessage) (*DataRowMessage, error) {
+// PostgresMessage interface implementation for DataRowPgMessage
+func (m *DataRowPgMessage) Unpack(message *RawPgMessage) (*DataRowPgMessage, error) {
 	idx := 0
 	idx, rowCount := utils.ParseInt16(message.Data, idx)
-
 	values := make([][]byte, rowCount)
 	for i := 0; i < rowCount; i++ {
 		idx, valueLength := utils.ParseInt32(message.Data, idx)
@@ -190,18 +227,17 @@ func (m *DataRowMessage) Unpack(message *RawMessage) (*DataRowMessage, error) {
 		values[i] = value
 	}
 
-	return &DataRowMessage{values}, nil
+	return &DataRowPgMessage{values}, nil
 }
 
-func (m *DataRowMessage) Pack() []byte {
+func (m *DataRowPgMessage) Pack() []byte {
 	messageLength := m.getByteLength() + 2 + 4 // content + column count + length
 	out := make([]byte, messageLength+1)       // +1 for the kind of message
-	idx := 0
 
+	idx := 0
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_DATA_ROW))
 	idx = utils.WriteInt32(out, idx, messageLength)
 	idx = utils.WriteInt16(out, idx, len(m.Values))
-
 	for _, value := range m.Values {
 		idx = utils.WriteInt32(out, idx, len(value))
 		idx = utils.WriteBytes(out, idx, value)
@@ -217,14 +253,12 @@ func (d FieldDescription) byteLength() int {
 }
 
 func (d FieldDescription) Pack() []byte {
-	nameBytes := []byte(d.Name)
 	messageLength := d.byteLength()
-
 	out := make([]byte, messageLength+1) // +1 for the kind of message
-	idx := 0
 
+	idx := 0
 	// Write the name of the field
-	idx = utils.WriteCString(out, idx, nameBytes)
+	idx = utils.WriteCString(out, idx, d.Name)
 	// Write the table oid
 	idx = utils.WriteInt32(out, idx, d.tableOid)
 	// Write the column oid
@@ -236,27 +270,27 @@ func (d FieldDescription) Pack() []byte {
 	// Write the type modifier
 	idx = utils.WriteInt32(out, idx, d.typeModifier)
 	// Write the format
-	idx = utils.WriteInt16(out, idx, d.format)
+	utils.WriteInt16(out, idx, d.format)
 
 	return out
 }
 
-// ParameterStatusMessage represents the message sent by the server to inform the client of sever parameter values
-type ParameterStatusMessage struct {
+// ParameterStatusPgMessage represents the message sent by the server to inform the client of sever parameter values
+type ParameterStatusPgMessage struct {
 	Name  string
 	Value string
 }
 
-func BuildParameterStatusMessage(name string, value string) *ParameterStatusMessage {
-	return &ParameterStatusMessage{name, value}
+func BuildParameterStatusPgMessage(name string, value string) *ParameterStatusPgMessage {
+	return &ParameterStatusPgMessage{name, value}
 }
 
-func (m *ParameterStatusMessage) getByteLength() int {
+func (m *ParameterStatusPgMessage) getByteLength() int {
 	return len(m.Name) + 1 + len(m.Value) + 1
 }
 
-// Message interface implementation for ParameterStatusMessage
-func (m *ParameterStatusMessage) Unpack(message *RawMessage) (*ParameterStatusMessage, error) {
+// Postgres Message interface implementation for ParameterStatusPgMessage
+func (m *ParameterStatusPgMessage) Unpack(message *RawPgMessage) (*ParameterStatusPgMessage, error) {
 	idx := 0
 	idx, name, err := utils.ParseCString(message.Data, idx)
 	if err != nil {
@@ -267,126 +301,125 @@ func (m *ParameterStatusMessage) Unpack(message *RawMessage) (*ParameterStatusMe
 		return nil, err
 	}
 
-	return &ParameterStatusMessage{name, value}, nil
+	return &ParameterStatusPgMessage{name, value}, nil
 }
 
-func (m *ParameterStatusMessage) Pack() []byte {
+func (m *ParameterStatusPgMessage) Pack() []byte {
 	messageLength := m.getByteLength() + 4 // content + length
 	out := make([]byte, messageLength+1)   // +1 for the kind of message
-	idx := 0
 
+	idx := 0
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_PARAMETER_STATUS))
 	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteCString(out, idx, []byte(m.Name))
-	idx = utils.WriteCString(out, idx, []byte(m.Value))
+	idx = utils.WriteCString(out, idx, m.Name)
+	utils.WriteCString(out, idx, m.Value)
 
 	return out
 }
 
-// BackendKeyDataMessage represents the message sent by the server to inform the client of the process id and secret key
-type BackendKeyDataMessage struct {
-	ProcessID int
+// BackendKeyDataPgMessage represents the message sent by the server to inform the client of the process id and secret key
+type BackendKeyDataPgMessage struct {
+	Pid       int
 	SecretKey int
 }
 
-func BuildBackendKeyDataMessage(processID int, secretKey int) *BackendKeyDataMessage {
-	return &BackendKeyDataMessage{processID, secretKey}
+func BuildBackendKeyDataPgMessage(processID int, secretKey int) *BackendKeyDataPgMessage {
+	return &BackendKeyDataPgMessage{processID, secretKey}
 }
 
-// Message interface implementation for BackendKeyDataMessage
-func (m *BackendKeyDataMessage) Unpack(message *RawMessage) (*BackendKeyDataMessage, error) {
+// Postgres Message interface implementation for BackendKeyDataPgMessage
+func (m *BackendKeyDataPgMessage) Unpack(message *RawPgMessage) (*BackendKeyDataPgMessage, error) {
 	idx := 0
-	idx, processID := utils.ParseInt32(message.Data, idx)
+	idx, Pid := utils.ParseInt32(message.Data, idx)
 	idx, secretKey := utils.ParseInt32(message.Data, idx)
 
-	return &BackendKeyDataMessage{processID, secretKey}, nil
+	return &BackendKeyDataPgMessage{Pid, secretKey}, nil
 }
 
-func (m *BackendKeyDataMessage) Pack() []byte {
+func (m *BackendKeyDataPgMessage) Pack() []byte {
 	messageLength := 4 + 4 + 4           // length + process id + secret key
 	out := make([]byte, messageLength+1) // +1 for the kind of message (1 byte
 
 	idx := 0
-
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_BACKEND_KEY_DATA))
 	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteInt32(out, idx, m.ProcessID)
-	_ = utils.WriteInt32(out, idx, m.SecretKey)
+	idx = utils.WriteInt32(out, idx, m.Pid)
+	utils.WriteInt32(out, idx, m.SecretKey)
 
 	return out
 }
 
-// ReadyForQueryMessage represents the message sent by the server to indicate that the server is ready to accept a new query
-type ReadyForQueryMessage struct {
+// ReadyForQueryPgMessage represents the message sent by the server to indicate that the server is ready to accept a new query
+type ReadyForQueryPgMessage struct {
 	TransactionStatus byte
 }
 
-func BuildReadyForQueryMessage(status byte) *ReadyForQueryMessage {
-	return &ReadyForQueryMessage{status}
+func BuildReadyForQueryPgMessage(status byte) *ReadyForQueryPgMessage {
+	return &ReadyForQueryPgMessage{status}
 }
 
-// Message interface implementation for ReadyForQueryMessage
-func (m *ReadyForQueryMessage) Unpack(message *RawMessage) (*ReadyForQueryMessage, error) {
-	return &ReadyForQueryMessage{}, nil
+// Postgres Message interface implementation for ReadyForQueryPgMessage
+func (m *ReadyForQueryPgMessage) Unpack(message *RawPgMessage) (*ReadyForQueryPgMessage, error) {
+	return &ReadyForQueryPgMessage{}, nil
 }
 
-func (m *ReadyForQueryMessage) Pack() []byte {
+func (m *ReadyForQueryPgMessage) Pack() []byte {
 	messageLength := 4 + 1               // length + status
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
 	idx := 0
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_READY_FOR_QUERY))
 	idx = utils.WriteInt32(out, 1, messageLength)
-	_ = utils.WriteByte(out, idx, m.TransactionStatus)
+	utils.WriteByte(out, idx, m.TransactionStatus)
 
 	return out
 }
 
-// NoDataMessage represents the message sent by the server to indicate that there is no data to return
-type NoDataMessage struct{}
+// NoDataPgMessage represents the message sent by the server to indicate that there is no data to return
+type NoDataPgMessage struct{}
 
-func BuildNoDataMessage() *NoDataMessage {
-	return &NoDataMessage{}
+func BuildNoDataPgMessage() *NoDataPgMessage {
+	return &NoDataPgMessage{}
 }
 
-// Message interface implementation for NoDataMessage
-func (m *NoDataMessage) Unpack(message *RawMessage) (*NoDataMessage, error) {
-	return &NoDataMessage{}, nil
+// Postgres Message interface implementation for NoDataPgMessage
+func (m *NoDataPgMessage) Unpack(message *RawPgMessage) (*NoDataPgMessage, error) {
+	return &NoDataPgMessage{}, nil
 }
 
-func (m *NoDataMessage) Pack() []byte {
+func (m *NoDataPgMessage) Pack() []byte {
 	messageLength := 4
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
 	idx := 0
 	idx = utils.WriteByte(out, idx, byte(BMESSAGE_NO_DATA))
-	_ = utils.WriteInt32(out, idx, messageLength)
+	utils.WriteInt32(out, idx, messageLength)
 
 	return out
 }
 
-// CommandCompleteMessage represents the message sent by the server to indicate that a command has been completed
-type CommandCompleteMessage struct {
+// CommandCompletePgMessage represents the message sent by the server to indicate that a command has been completed
+type CommandCompletePgMessage struct {
 	Command string
 }
 
-func BuildCommandCompleteMessage(command string) *CommandCompleteMessage {
-	return &CommandCompleteMessage{command}
+func BuildCommandCompletePgMessage(command string) *CommandCompletePgMessage {
+	return &CommandCompletePgMessage{command}
 }
 
-// Message interface implementation for CommandCompleteMessage
-func (m *CommandCompleteMessage) Unpack(message *RawMessage) (*CommandCompleteMessage, error) {
-	return &CommandCompleteMessage{string(message.Data)}, nil
+// Message interface implementation for CommandCompletePgMessage
+func (m *CommandCompletePgMessage) Unpack(message *RawPgMessage) (*CommandCompletePgMessage, error) {
+	return &CommandCompletePgMessage{string(message.Data)}, nil
 }
 
-func (m *CommandCompleteMessage) Pack() []byte {
+func (m *CommandCompletePgMessage) Pack() []byte {
 	messageLength := len(m.Command) + 1 + 4 // content + length
 	out := make([]byte, messageLength+1)    // +1 for the kind of message
 
 	idx := 0
 	idx = utils.WriteByte(out, idx, byte('C'))
 	idx = utils.WriteInt32(out, idx, messageLength)
-	_ = utils.WriteCString(out, idx, []byte(m.Command))
+	utils.WriteCString(out, idx, m.Command)
 
 	return out
 }
