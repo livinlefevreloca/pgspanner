@@ -2,10 +2,14 @@ package protocol
 
 import (
 	"fmt"
+	"log/slog"
 
 	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/utils"
 )
+
+/// An implementation of the Postgres protocol messages that are sent by the client to the server
+/// Described in detail https://www.postgresql.org/docs/current/protocol-message-formats.html
 
 // Frontend PgMessage kinds
 const (
@@ -75,7 +79,7 @@ func (m *StartupPgMessage) Unpack(message *RawPgMessage) (*StartupPgMessage, err
 }
 
 func (m StartupPgMessage) Pack() []byte {
-	out := make([]byte, 1024)
+	out := make([]byte, 1024) // 1KB should be enough for the startup message
 	idx := 0
 
 	// Write a dummy length for now
@@ -85,15 +89,19 @@ func (m StartupPgMessage) Pack() []byte {
 	idx = utils.WriteCString(out, idx, m.User)
 	idx = utils.WriteCString(out, idx, "database")
 	idx = utils.WriteCString(out, idx, m.Database)
+	slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	for key, value := range m.Options {
-		idx = utils.WriteCString(out, idx, key)
-		idx = utils.WriteCString(out, idx, value)
+		idx, out = utils.WriteCStringSafe(out, idx, key)
+		idx, out = utils.WriteCStringSafe(out, idx, value)
+		slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	}
-	idx = utils.WriteByte(out, idx, 0) // Null terminator
+	idx, out = utils.WriteByteSafe(out, idx, 0) // Null terminator
 
-	// Write the actual length
+	// Write the actual length. We use the non safe version of WriteInt32
+	// because we know the index is within the bounds of the slice
 	utils.WriteInt32(out, 0, idx)
 
+	slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	return out[:idx]
 }
 

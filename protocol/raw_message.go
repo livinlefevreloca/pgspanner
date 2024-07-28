@@ -2,6 +2,7 @@ package protocol
 
 import (
 	"io"
+	"log/slog"
 	"net"
 
 	"github.com/livinlefevreloca/pgspanner/utils"
@@ -38,6 +39,7 @@ func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
 	}
 
 	if length == 8 {
+		slog.Info("SSL request received")
 		if err := handleSSLRequest(conn); err != nil {
 			return nil, err
 		}

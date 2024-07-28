@@ -74,28 +74,51 @@ func configPacketShim(ctx *ClientConnectionContext) []byte {
 	return buffer[:idx]
 }
 
-func queryResponsePackShim() []byte {
-	buffer := make([]byte, 1024)
-	rowDescriptionPgMessage := protocol.BuildRowDescriptionPgMessage(
-		map[string][]int{
-			"?column?": {0, 0, 0x17, 4, -1, 0},
-		},
-	)
-	dataRowPgMessage := protocol.BuildDataRowPgMessage([][]byte{{0x31}})
-	commandCompletePgMessage := protocol.BuildCommandCompletePgMessage("SELECT 1")
-	readyForQueryPgMessage := protocol.BuildReadyForQueryPgMessage(byte('I'))
-
-	idx := utils.WriteBytes(buffer, 0, rowDescriptionPgMessage.Pack())
-	idx = utils.WriteBytes(buffer, idx, dataRowPgMessage.Pack())
-	idx = utils.WriteBytes(buffer, idx, commandCompletePgMessage.Pack())
-	idx = utils.WriteBytes(buffer, idx, readyForQueryPgMessage.Pack())
-
-	return buffer[:idx]
+func buildErrorResponsePacket(errMsg *protocol.ErrorResponsePgMessage) []byte {
+	packet := errMsg.Pack()
+	packet = append(packet, protocol.BuildReadyForQueryPgMessage(byte('I')).Pack()...)
+	return packet
 }
 
-func handleQuery(query string, client *ClientConnection) {
-	cluster := &client.Ctx.Database.Clusters[0]
-	server := server.CreateServerConnection(cluster)
+func handleQuery(
+	query string,
+	client *ClientConnection,
+	requester *server.ConnectionRequester,
+	database *config.DatabaseConfig,
+) {
+	// For now just read from the first cluster
+	cluster := database.Clusters[0]
+	slog.Info(
+		"Requesting Connection",
+		"Cluster", cluster.Name,
+		"Database", database.Name,
+	)
+	response := requester.RequestConnection(database.Name, cluster.Name)
+	switch response.Result {
+	case server.RESULT_SUCCESS:
+		break
+	case server.RESULT_ERROR:
+		slog.Error("Error Requesting Connection", "error", response.Detail.Error())
+		params := map[string]string{
+			protocol.NOTICE_KIND_SEVERITY_NONLOCALIZED: "ERROR",
+			protocol.NOTICE_KIND_SEVERITY_LOCALIZED:    "ERROR",
+			protocol.NOTICE_KIND_CODE:                  "08000",
+			protocol.NOTICE_KIND_MESSAGE:               fmt.Sprintf("Failed to open connection to cluster %s for database %s", cluster.Name, database.Name),
+			protocol.NOTICE_KIND_DETAIL:                response.Detail.Error(),
+		}
+		errMsg := protocol.BuildErrorResponsePgMessage(params)
+		client.Write(buildErrorResponsePacket(errMsg))
+
+		return
+	}
+
+	slog.Info(
+		"Recieved Connection",
+		"Cluster", cluster.Name,
+		"Database", database.Name,
+		"ConnectionPid", response.Conn.GetBackendPid(),
+	)
+	server := response.Conn
 	server.IssueQuery(query)
 
 	// Copy messages directly from server to client
@@ -108,6 +131,7 @@ func handleQuery(query string, client *ClientConnection) {
 		switch rm.Kind {
 		case protocol.BMESSAGE_READY_FOR_QUERY:
 			client.Write(rm.Pack())
+			requester.ReturnConnection(server, database.Name, cluster.Name)
 			return
 		default:
 			client.Write(rm.Pack())
@@ -115,7 +139,7 @@ func handleQuery(query string, client *ClientConnection) {
 	}
 }
 
-func ConnectionLoop(conn net.Conn, database *config.DatabaseConfig) {
+func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionRequester *server.ConnectionRequester) {
 	defer conn.Close()
 	raw_message, err := protocol.GetRawStartupPgMessage(conn)
 	if err != nil {
@@ -128,6 +152,7 @@ func ConnectionLoop(conn net.Conn, database *config.DatabaseConfig) {
 		slog.Error("Error: ", err)
 		return
 	}
+	database, _ := config.GetDatabaseConfigByName(startPgMessage.Database)
 
 	ctx := NewClientConnectionContext(startPgMessage, database)
 	clientConnection := &ClientConnection{Conn: conn, Ctx: ctx}
@@ -148,10 +173,24 @@ func ConnectionLoop(conn net.Conn, database *config.DatabaseConfig) {
 				slog.Error("Error: ", err)
 			}
 			slog.Info("Recieved Query: ", "query", queryPgMessage.Query)
-			handleQuery(queryPgMessage.Query, clientConnection)
+			handleQuery(queryPgMessage.Query, clientConnection, connectionRequester, database)
 		case protocol.FMESSAGE_TERMINATE:
-			slog.Info("Terminating connection")
+			slog.Info("Terminating client connection")
 			return
+		case protocol.BMESSAGE_ERROR_RESPONSE:
+			errorPgMessage := &protocol.ErrorResponsePgMessage{}
+			errorPgMessage, err := errorPgMessage.Unpack(raw_message)
+			if err != nil {
+				slog.Error("Error parsing error response from server", "error", err)
+			}
+			slog.Error(
+				"Error from server",
+				"Severity", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_SEVERITY_NONLOCALIZED),
+				"Code", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_CODE),
+				"Message", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_MESSAGE),
+				"Detail", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_DETAIL),
+			)
+			clientConnection.Write(raw_message.Pack())
 		default:
 			slog.Warn("Unknown message kind: ", "kind", fmt.Sprint(raw_message.Kind))
 		}

@@ -12,54 +12,14 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/livinlefevreloca/pgspanner/client"
 	"github.com/livinlefevreloca/pgspanner/config"
+	"github.com/livinlefevreloca/pgspanner/keepalive"
+	"github.com/livinlefevreloca/pgspanner/server"
+	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
 const (
-	TIMEOUT = 2 * time.Second
+	TIMEOUT = 10 * time.Second
 )
-
-type KeepAlive struct {
-	name    string
-	channel chan bool
-	f       func(*config.SpannerConfig, *KeepAlive)
-}
-
-func (k *KeepAlive) notify() {
-	k.channel <- true
-}
-
-func startClientConnectionHandler(config *config.SpannerConfig) KeepAlive {
-	chKeepAliveChan := make(chan bool)
-
-	chKeepAlive := KeepAlive{
-		name:    "clientConnectionHandler",
-		channel: chKeepAliveChan,
-		f:       clientConnectionHandler,
-	}
-
-	// Start the client connection handler
-	slog.Info("Starting client connection handler")
-	go clientConnectionHandler(config, &chKeepAlive)
-
-	return chKeepAlive
-}
-
-func RunKeepAliveHandler(config *config.SpannerConfig, keepAlives []KeepAlive) {
-	// Start the client keep alive handler
-	for {
-		// If we havent received a message in 2 * TIMEOUT,
-		time.Sleep(TIMEOUT * 2)
-		for _, keepAlive := range keepAlives {
-			select {
-			case <-keepAlive.channel:
-				continue
-			default:
-				slog.Warn(fmt.Sprintf("Component: %s is not alive. Restarting...", keepAlive.name))
-				go keepAlive.f(config, &keepAlive)
-			}
-		}
-	}
-}
 
 func main() {
 	// Read the config
@@ -70,14 +30,62 @@ func main() {
 	}
 	fmt.Println(config.Display())
 
-	var keepAlives []KeepAlive
-	chKeepAlive := startClientConnectionHandler(&config)
-	keepAlives = append(keepAlives, chKeepAlive)
+	connRequester := server.NewConnectionRequester()
 
-	RunKeepAliveHandler(&config, keepAlives)
+	var keepAlives []*keepalive.KeepAlive
+	chKeepAlive := keepalive.StartComponentWithKeepAlive(
+		"clientConnectionHandler",
+		clientConnectionHandler,
+		TIMEOUT*2,
+		&config,
+		connRequester,
+	)
+	keepAlives = append(keepAlives, chKeepAlive)
+	poolKeepAlive := keepalive.StartComponentWithKeepAlive(
+		"poolManager",
+		RunPoolManager,
+		server.CONNECTION_SWEEP_INTERVAL*4,
+		&config,
+		connRequester,
+	)
+	keepAlives = append(keepAlives, poolKeepAlive)
+
+	keepalive.RunKeepAliveHandler(&config, keepAlives, connRequester)
 }
 
-func clientConnectionHandler(config *config.SpannerConfig, keepAlive *KeepAlive) {
+func RunPoolManager(config *config.SpannerConfig, keepAlive *keepalive.KeepAlive, connectionReqester *server.ConnectionRequester) {
+	// Start the pool manager
+	poolManager := server.NewPoolerManager(config, connectionReqester)
+	notifier := make(chan bool, 10)
+	go poolManager.StartConnectionSweeper(&notifier)
+	for {
+		slog.Info("Pool manager loop")
+		time.AfterFunc(server.CONNECTION_SWEEP_INTERVAL*2, func() {
+			keepAlive.Notify()
+			select {
+			case <-notifier:
+				utils.ClearChannel(notifier)
+			default:
+				slog.Warn("Connection sweeper is not running. Restarting...")
+				go poolManager.StartConnectionSweeper(&notifier)
+			}
+		})
+		select {
+		case request := <-connectionReqester.ReceiveConnectionRequest():
+			slog.Info("Received connection request", "action", request.Event)
+			switch request.Event {
+			case server.ACTION_GET_CONNECTION:
+				poolManager.SendConnectionResponse(*request)
+			case server.ACTION_RETURN_CONNECTION:
+				poolManager.ReturnConnection(*request)
+				slog.Info("Returned connection to pool")
+			}
+		case <-time.After(server.CONNECTION_SWEEP_INTERVAL * 4):
+		}
+	}
+}
+
+func clientConnectionHandler(config *config.SpannerConfig, keepAlive *keepalive.KeepAlive, connectionReqester *server.ConnectionRequester) {
 	slog.Info("Client connection handler started")
 	addr := net.TCPAddr{
 		IP:   net.ParseIP("0.0.0.0"),
@@ -96,14 +104,16 @@ func clientConnectionHandler(config *config.SpannerConfig, keepAlive *KeepAlive)
 		l.SetDeadline(time.Now().Add(TIMEOUT))
 		conn, err := l.Accept()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
-			keepAlive.notify()
+			keepAlive.Notify()
+			slog.Info("Client connection handler loop timeout")
 			continue
 		} else if err != nil {
 			log.Fatal(err)
 			return
 		}
 		slog.Info("Client connected. Starting connection loop...")
-		go client.ConnectionLoop(conn, &config.Databases[0])
-		keepAlive.notify()
+		go client.ConnectionLoop(conn, config, connectionReqester)
+		keepAlive.Notify()
+		slog.Info("Client connection handler loop")
 	}
 }

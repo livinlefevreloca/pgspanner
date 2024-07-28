@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"time"
 
 	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/protocol"
@@ -17,18 +18,23 @@ import (
 // Calculate the md5 hash of the password, username, and salt
 func getMd5Password(password string, username string, salt []byte) string {
 	// Alocate enough space for the password, username, md5 hash, and salt
-	firstPass := make([]byte, 0, len(password)+len(username))
-	secondPass := make([]byte, 0, 32+len(salt))
+	firstPass := make([]byte, len(password)+len(username))
+	secondPass := make([]byte, 32+len(salt))
+
 	// Write password, and the username to the buffer
-	firstPass = append(firstPass, []byte(password)...)
-	firstPass = append(firstPass, []byte(username)...)
+	n := copy(firstPass, []byte(password))
+	copy(firstPass[n:], []byte(username))
+
 	// Calculate the md5 hash of the password and username combination
 	md5Bytes := md5.Sum(firstPass)
+
 	// create a hex string from the md5 hash
 	md5String := hex.EncodeToString(md5Bytes[:])
+
 	// Write firstPass md5 hash, and the salt to the buffer
-	secondPass = append(secondPass, md5String...)
-	secondPass = append(secondPass, salt...)
+	n = copy(secondPass, md5String)
+	copy(secondPass[n:], salt)
+
 	// Calculate the md5 hash of the md5 hash and the salt
 	md5Bytes = md5.Sum(secondPass)
 
@@ -97,7 +103,6 @@ func handleStartup(
 
 		switch raw_message.Kind {
 		case protocol.BMESSAGE_AUTH:
-			slog.Info("Received authentication message")
 			handleServerAuth(conn, clusterConfig, raw_message)
 		case protocol.BMESSAGE_PARAMETER_STATUS:
 			parameterMessage := &protocol.ParameterStatusPgMessage{}
@@ -115,7 +120,6 @@ func handleStartup(
 			serverContext.BackendPid = backendKeyData.Pid
 			serverContext.BackendKey = backendKeyData.SecretKey
 		case protocol.BMESSAGE_READY_FOR_QUERY:
-			slog.Info("Servcer Connection established")
 			return serverContext
 		default:
 			slog.Error("Unknown message type", "kind", raw_message.Kind)
@@ -127,8 +131,13 @@ func handleStartup(
 
 // An object representing a connection to a server
 type ServerConnection struct {
-	Conn    net.Conn
-	Context *serverConnectionContext
+	Conn       net.Conn
+	Context    *serverConnectionContext
+	createTime int64
+}
+
+func (s *ServerConnection) GetBackendPid() int {
+	return s.Context.BackendPid
 }
 
 // Implement the Writer interface for the ServerConnection
@@ -151,10 +160,18 @@ func (s *ServerConnection) Read(p []byte) (n int, err error) {
 	}
 }
 
-func CreateServerConnection(clusterConfig *config.ClusterConfig) *ServerConnection {
+func (s *ServerConnection) GetAge() int64 {
+	return time.Now().Unix() - s.createTime
+}
+
+func (s *ServerConnection) Close() {
+	s.Conn.Close()
+}
+
+func CreateServerConnection(clusterConfig *config.ClusterConfig) (*ServerConnection, error) {
 	addrs, err := net.LookupHost(clusterConfig.Host)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	hostAddr := net.TCPAddr{
@@ -164,7 +181,7 @@ func CreateServerConnection(clusterConfig *config.ClusterConfig) *ServerConnecti
 
 	conn, err := net.DialTCP("tcp", nil, &hostAddr)
 	if err != nil {
-		panic(err)
+		return nil, err
 	}
 
 	serverContext := newServerConnectionContext(clusterConfig)
@@ -175,11 +192,12 @@ func CreateServerConnection(clusterConfig *config.ClusterConfig) *ServerConnecti
 	serverContext = handleStartup(conn, clusterConfig, serverContext)
 
 	serverConnection := ServerConnection{
-		Conn:    conn,
-		Context: serverContext,
+		Conn:       conn,
+		Context:    serverContext,
+		createTime: time.Now().Unix(),
 	}
 
-	return &serverConnection
+	return &serverConnection, nil
 }
 
 func (s *ServerConnection) IssueQuery(query string) {

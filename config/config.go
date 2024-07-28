@@ -61,6 +61,15 @@ type SpannerConfig struct {
 	Databases []DatabaseConfig
 }
 
+func (c *SpannerConfig) GetDatabaseConfigByName(name string) (*DatabaseConfig, bool) {
+	for _, d := range c.Databases {
+		if d.Name == name {
+			return &d, true
+		}
+	}
+	return nil, false
+}
+
 func (s *SpannerConfig) Display() string {
 	confStr := ""
 	confStr += "LogLevel: " + s.LogLevel + "\n"

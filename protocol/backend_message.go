@@ -1,6 +1,11 @@
 package protocol
 
-import "github.com/livinlefevreloca/pgspanner/utils"
+import (
+	"github.com/livinlefevreloca/pgspanner/utils"
+)
+
+/// An implementation of the Postgres protocol messages that are sent by the server to the client
+/// Described in detail https://www.postgresql.org/docs/current/protocol-message-formats.html
 
 // Backend Postgres Message kinds
 const (
@@ -11,6 +16,8 @@ const (
 	BMESSAGE_READY_FOR_QUERY  = 90
 	BMESSAGE_NO_DATA          = 110
 	BMESSAGE_DATA_ROW         = 68
+	BMESSAGE_COMMAND_COMPLETE = 67
+	BMESSAGE_ERROR_RESPONSE   = 69
 )
 
 const (
@@ -81,7 +88,7 @@ type RowDescriptionPgMessage struct {
 
 // Build a new RowDescriptionPgMessage
 func BuildRowDescriptionPgMessage(fieldsMap map[string][]int) *RowDescriptionPgMessage {
-	var fields []FieldDescription
+	fields := make([]FieldDescription, 0, len(fieldsMap))
 	for name, fieldData := range fieldsMap {
 		field := buildFieldDescription(
 			name,
@@ -422,4 +429,156 @@ func (m *CommandCompletePgMessage) Pack() []byte {
 	utils.WriteCString(out, idx, m.Command)
 
 	return out
+}
+
+// ErrorResponsePgMessage represents the message sent by the server to indicate that an error occurred
+type ErrorResponsePgMessage struct {
+	Fields map[string]ErrorField
+}
+
+func (m *ErrorResponsePgMessage) GetErrorResponseField(kind string) string {
+	return m.Fields[kind].Value
+}
+
+func BuildErrorResponsePgMessage(params map[string]string) *ErrorResponsePgMessage {
+	fields := make(map[string]ErrorField)
+	for key, value := range params {
+		typ := mapNameToNoticeType(key)
+		fields[key] = newErrorField(typ, value)
+	}
+
+	return &ErrorResponsePgMessage{fields}
+}
+
+func (m *ErrorResponsePgMessage) Unpack(message *RawPgMessage) (*ErrorResponsePgMessage, error) {
+	var idx int
+	var err error
+	var value string
+	fields := make(map[string]ErrorField)
+
+	for idx < len(message.Data) {
+		typ := message.Data[idx]
+		idx, value, err = utils.ParseCString(message.Data, idx)
+		if err != nil {
+			return nil, err
+		}
+		name := mapNoticeTypeToName(typ)
+		fields[name] = newErrorField(typ, value)
+	}
+	return &ErrorResponsePgMessage{fields}, nil
+}
+
+func (m *ErrorResponsePgMessage) Pack() []byte {
+	out := make([]byte, 1024) // 1KB should be enough for most cases. Use
+	messageLength := 4        // kind + length
+
+	idx := 0
+	idx = utils.WriteByte(out, idx, byte(BMESSAGE_ERROR_RESPONSE))
+	idx = utils.WriteInt32(out, idx, -1) // Placeholder for the length
+	for _, field := range m.Fields {
+		fieldBytes := field.Pack()
+		idx, out = utils.WriteBytesSafe(out, idx, fieldBytes)
+		messageLength += len(fieldBytes)
+	}
+	// Additional null terminator
+	idx, out = utils.WriteBytesSafe(out, idx, []byte{0})
+	messageLength += 1
+
+	// Write the length of the message. We use the non safe
+	// version of WriteInt32 because we know the that
+	// the index we are writing to is within the bounds of
+	// the slice
+	utils.WriteInt32(out, 1, messageLength)
+
+	return out[:idx]
+}
+
+type ErrorField struct {
+	Type  byte
+	Value string
+}
+
+func newErrorField(typ byte, value string) ErrorField {
+	return ErrorField{typ, value}
+}
+
+func (e ErrorField) Pack() []byte {
+	out := make([]byte, 1+len(e.Value)+1) // 1 byte + value + null terminator
+
+	idx := 0
+	idx = utils.WriteByte(out, idx, e.Type)
+	idx = utils.WriteCString(out, idx, e.Value)
+
+	return out
+}
+
+const (
+	NOTICE_KIND_SEVERITY_NONLOCALIZED = "Severity Nonlocalized"
+	NOTICE_KIND_SEVERITY_LOCALIZED    = "Severity Localized"
+	NOTICE_KIND_CODE                  = "Code"
+	NOTICE_KIND_MESSAGE               = "Message"
+	NOTICE_KIND_DETAIL                = "Detail"
+	NOTICE_KIND_HINT                  = "Hint"
+	NOTICE_KIND_POSITION              = "Position"
+	NOTICE_KIND_INTERNAL_POSITION     = "Internal Position"
+	NOTICE_KIND_INTERNAL_QUERY        = "Internal Query"
+	NOTICE_KIND_WHERE                 = "Where"
+	NOTICE_KIND_SCHEMA_NAME           = "Schema Name"
+	NOTICE_KIND_TABLE_NAME            = "Table Name"
+	NOTICE_KIND_COLUMN_NAME           = "Column Name"
+	NOTICE_KIND_DATA_TYPE_NAME        = "Data Type Name"
+	NOTICE_KIND_CONSTRAINT_NAME       = "Constraint Name"
+	NOTICE_KIND_FILE                  = "File"
+	NOTICE_KIND_LINE                  = "Line"
+	NOTICE_KIND_ROUTINE               = "Routine"
+)
+
+func mapNoticeTypeToName(typ byte) string {
+	// Map the notice type to the name of the field
+	// https://www.postgresql.org/docs/current/protocol-error-fields.html
+	return map[byte]string{
+		'S': NOTICE_KIND_SEVERITY_NONLOCALIZED,
+		'V': NOTICE_KIND_SEVERITY_LOCALIZED,
+		'C': NOTICE_KIND_CODE,
+		'M': NOTICE_KIND_MESSAGE,
+		'D': NOTICE_KIND_DETAIL,
+		'H': NOTICE_KIND_HINT,
+		'P': NOTICE_KIND_POSITION,
+		'p': NOTICE_KIND_INTERNAL_POSITION,
+		'q': NOTICE_KIND_INTERNAL_QUERY,
+		'W': NOTICE_KIND_WHERE,
+		's': NOTICE_KIND_SCHEMA_NAME,
+		't': NOTICE_KIND_TABLE_NAME,
+		'c': NOTICE_KIND_COLUMN_NAME,
+		'd': NOTICE_KIND_DATA_TYPE_NAME,
+		'n': NOTICE_KIND_CONSTRAINT_NAME,
+		'F': NOTICE_KIND_FILE,
+		'L': NOTICE_KIND_LINE,
+		'R': NOTICE_KIND_ROUTINE,
+	}[typ]
+}
+
+func mapNameToNoticeType(name string) byte {
+	// Map the notice type to the name of the field
+	// https://www.postgresql.org/docs/current/protocol-error-fields.html
+	return map[string]byte{
+		NOTICE_KIND_SEVERITY_NONLOCALIZED: 'S',
+		NOTICE_KIND_SEVERITY_LOCALIZED:    'V',
+		NOTICE_KIND_CODE:                  'C',
+		NOTICE_KIND_MESSAGE:               'M',
+		NOTICE_KIND_DETAIL:                'D',
+		NOTICE_KIND_HINT:                  'H',
+		NOTICE_KIND_POSITION:              'P',
+		NOTICE_KIND_INTERNAL_POSITION:     'p',
+		NOTICE_KIND_INTERNAL_QUERY:        'q',
+		NOTICE_KIND_WHERE:                 'W',
+		NOTICE_KIND_SCHEMA_NAME:           's',
+		NOTICE_KIND_TABLE_NAME:            't',
+		NOTICE_KIND_COLUMN_NAME:           'c',
+		NOTICE_KIND_DATA_TYPE_NAME:        'd',
+		NOTICE_KIND_CONSTRAINT_NAME:       'n',
+		NOTICE_KIND_FILE:                  'F',
+		NOTICE_KIND_LINE:                  'L',
+		NOTICE_KIND_ROUTINE:               'R',
+	}[name]
 }

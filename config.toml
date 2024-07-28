@@ -11,7 +11,11 @@ authMethod = "md5"
 
 [[databases.clusters]]
 name = "lyfe"
-host = "main-postgres.dlaw"
+host = "localhost"
 port = 5432
 user = "postgres"
 passwordEnv = "PG_PASSWORD"
+
+[databases.poolSettings]
+maxOpenConns = 10
+maxConnLifetime = 900

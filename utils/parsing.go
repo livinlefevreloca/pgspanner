@@ -65,3 +65,35 @@ func WriteBytes(data []byte, idx int, value []byte) int {
 	copy(data[idx:], value)
 	return idx + len(value)
 }
+
+// "SAFE" functions
+
+func WriteByteSafe(data []byte, idx int, value byte) (int, []byte) {
+	data = append(data[:idx], value)
+	return idx + 1, data
+}
+
+func WriteInt32Safe(data []byte, idx int, value int) (int, []byte) {
+	b := make([]byte, 4)
+	binary.BigEndian.PutUint32(b, uint32(value))
+	data = append(data[:idx], b...)
+	return idx + 4, data
+}
+
+func WriteInt16Safe(data []byte, idx int, value int) (int, []byte) {
+	b := make([]byte, 2)
+	binary.BigEndian.PutUint16(b, uint16(value))
+	data = append(data[:idx], b...)
+	return idx + 2, data
+}
+
+func WriteCStringSafe(data []byte, idx int, value string) (int, []byte) {
+	data = append(data[:idx], value...)
+	data = append(data, 0)
+	return idx + len(value) + 1, data
+}
+
+func WriteBytesSafe(data []byte, idx int, value []byte) (int, []byte) {
+	data = append(data[:idx], value...)
+	return idx + len(value), data
+}
