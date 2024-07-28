@@ -37,7 +37,7 @@ func RunKeepAliveHandler(
 	// Start the client keep alive handler
 	maxTimeout := GetMaxKeepAliveTimeout(keepAlives)
 	for {
-		slog.Info("Running KeepAlive Handler loop", "Sleep", maxTimeout)
+		slog.Debug("Running KeepAlive Handler loop", "Sleep", maxTimeout)
 		for _, keepAlive := range keepAlives {
 			go keepAlive.expect(config, connectionRequester)
 		}
@@ -73,14 +73,14 @@ func NewKeepAlive(name string, f func(*config.SpannerConfig, *KeepAlive, *server
 
 func (k *KeepAlive) expect(config *config.SpannerConfig, connectionRequester *server.ConnectionRequester) {
 	time.Sleep(k.timeout)
-	slog.Info("Check for liveness", "Component", k.name)
+	slog.Debug("Check for liveness", "Component", k.name)
 	select {
 	case <-k.channel:
-		slog.Info("Component Channel has messages", "Count", len(k.channel))
+		slog.Debug("Component Channel has messages", "Count", len(k.channel))
 		if len(k.channel) > 0 {
 			utils.ClearChannel(k.channel)
 		}
-		slog.Info("Component Channel has messages after clearing", "Count", len(k.channel))
+		slog.Debug("Component Channel has messages after clearing", "Count", len(k.channel))
 	default:
 		slog.Warn(fmt.Sprintf("Component: %s is not alive. Restarting...", k.name))
 		go k.restart(config, connectionRequester)
@@ -88,7 +88,7 @@ func (k *KeepAlive) expect(config *config.SpannerConfig, connectionRequester *se
 }
 
 func (k *KeepAlive) Notify() {
-	slog.Info("Queue before notifying", "Count", len(k.channel), "Component", k.name)
+	slog.Debug("Queue before notifying", "Count", len(k.channel), "Component", k.name)
 	k.Clear()
 	k.channel <- true
 }
@@ -100,7 +100,7 @@ func (k *KeepAlive) Clear() {
 		default:
 		}
 	}
-	slog.Info("Queue after clearing", "Count", len(k.channel), "Component", k.name)
+	slog.Debug("Queue after clearing", "Count", len(k.channel), "Component", k.name)
 }
 
 func (k *KeepAlive) restart(config *config.SpannerConfig, connectionReqester *server.ConnectionRequester) {

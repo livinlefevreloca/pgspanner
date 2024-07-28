@@ -45,7 +45,7 @@ func staticServerConfiguration(ctx *ClientConnectionContext) *map[string]string 
 		"IntervalStyle":               "postgres",
 		"is_superuser":                "on",
 		"server_encoding":             "UTF8",
-		"server_version":              "pgspanner-0.0.1",
+		"server_version":              "pgspanner-0.1",
 		"session_authorization":       ctx.User,
 		"standard_conforming_strings": "on",
 		"TimeZone":                    "UTC",
@@ -65,7 +65,7 @@ func configPacketShim(ctx *ClientConnectionContext) []byte {
 		configPgMessage := protocol.BuildParameterStatusPgMessage(k, v)
 		idx = utils.WriteBytes(buffer, idx, configPgMessage.Pack())
 	}
-	keyDataPgMessage := protocol.BuildBackendKeyDataPgMessage(1337, 1)
+	keyDataPgMessage := protocol.BuildBackendKeyDataPgMessage(ctx.ClientPid, ctx.ClientSecret)
 	idx = utils.WriteBytes(buffer, idx, keyDataPgMessage.Pack())
 
 	readyForQueryPgMessage := protocol.BuildReadyForQueryPgMessage(byte('I'))
@@ -80,20 +80,83 @@ func buildErrorResponsePacket(errMsg *protocol.ErrorResponsePgMessage) []byte {
 	return packet
 }
 
-func handleQuery(
-	query string,
-	client *ClientConnection,
+func handleCancelRequest(
+	cancelMessage *protocol.CancelRequestPgMessage,
+	config *config.SpannerConfig,
+	requester *server.ConnectionRequester,
+) {
+	slog.Info(
+		"Recieved Cancel Request. Forwarding to server",
+		"clientPid", cancelMessage.BackendPid,
+		"clientSecret", cancelMessage.BackendKey,
+	)
+	// Get the server connection mapping
+	serverProcesses, err := getSeverConnectionMapping(
+		requester,
+		// This is the client pid of the connection that sent the original query
+		cancelMessage.BackendPid,
+	)
+	if err != nil {
+		slog.Error("Error getting server connection mapping", "error", err)
+		return
+	}
+
+	for _, serverProcess := range serverProcesses {
+		database, ok := config.GetDatabaseConfigByName(serverProcess.DatabaseName)
+		if !ok {
+			slog.Error("Database config not found", "database", serverProcess.DatabaseName)
+			continue
+		}
+		cluster, ok := database.GetClusterConfigByHostPort(serverProcess.ClusterHost, serverProcess.ClusterPort)
+		if !ok {
+			slog.Error("Cluster config not found", "cluster", serverProcess.ClusterHost)
+			continue
+		}
+		serverConn, err := server.CreateUnititializedServerConnection(database, cluster)
+		if serverProcess.BackendPid == serverConn.GetBackendPid() {
+			continue
+		}
+		slog.Info(
+			"Sending cancel request to server",
+			"serverDatabase", serverProcess.DatabaseName,
+			"serverCluster", fmt.Sprintf("%s:%d", serverProcess.ClusterHost, serverProcess.ClusterPort),
+			"serverPid", serverProcess.BackendPid,
+		)
+		cancelRequest := protocol.BuildCancelRequestPgMessage(serverProcess.BackendPid, serverProcess.BackendKey)
+		_, err = serverConn.Write(cancelRequest.Pack())
+		if err != nil {
+			slog.Error(
+				"Error sending cancel request to server",
+				"error", err,
+				"serverDatabase", serverProcess.DatabaseName,
+				"serverCluster", fmt.Sprintf("%s:%d", serverProcess.ClusterHost, serverProcess.ClusterPort),
+				"serverPid", serverProcess.BackendPid,
+			)
+			return
+		}
+	}
+}
+
+func getServerConnection(
 	requester *server.ConnectionRequester,
 	database *config.DatabaseConfig,
-) {
-	// For now just read from the first cluster
-	cluster := database.Clusters[0]
+	clusterHost string,
+	clusterPort int,
+	clientPid int,
+) (*server.ServerConnection, error) {
+	cluster, ok := database.GetClusterConfigByHostPort(clusterHost, clusterPort)
+	if !ok {
+		slog.Error("Specified cluster config does not exist")
+		return nil, fmt.Errorf("Specified cluster config does not exist")
+	}
 	slog.Info(
 		"Requesting Connection",
 		"Cluster", cluster.Name,
 		"Database", database.Name,
+		"ClientPid", clientPid,
 	)
-	response := requester.RequestConnection(database.Name, cluster.Name)
+	response := requester.RequestConnection(database.Name, cluster.Name, clientPid)
+
 	switch response.Result {
 	case server.RESULT_SUCCESS:
 		break
@@ -107,9 +170,8 @@ func handleQuery(
 			protocol.NOTICE_KIND_DETAIL:                response.Detail.Error(),
 		}
 		errMsg := protocol.BuildErrorResponsePgMessage(params)
-		client.Write(buildErrorResponsePacket(errMsg))
 
-		return
+		return nil, errMsg
 	}
 
 	slog.Info(
@@ -118,20 +180,61 @@ func handleQuery(
 		"Database", database.Name,
 		"ConnectionPid", response.Conn.GetBackendPid(),
 	)
-	server := response.Conn
+
+	return response.Conn, nil
+}
+
+func getSeverConnectionMapping(
+	requester *server.ConnectionRequester,
+	clientPid int,
+) ([]server.ServerProcessIdentity, error) {
+	slog.Info(
+		"Requesting Connection Mapping",
+		"ClientPid", clientPid,
+	)
+	response := requester.RequestConnectionMapping(clientPid)
+
+	if response.Result == server.RESULT_ERROR {
+		slog.Error("Error Requesting Connection Mapping", "error", response.Detail.Error())
+		return nil, response.Detail
+	}
+
+	return response.ConnMapping, nil
+}
+
+func handleQuery(
+	query string,
+	client *ClientConnection,
+	requester *server.ConnectionRequester,
+	database *config.DatabaseConfig,
+) {
+	// Get a connection from the pool
+	cluster := database.Clusters[0]
+	server, err := getServerConnection(requester, database, cluster.Host, cluster.Port, client.Ctx.ClientPid)
+	if err != nil {
+		if errMsg, ok := err.(*protocol.ErrorResponsePgMessage); ok {
+			client.Write(buildErrorResponsePacket(errMsg))
+			return
+		} else {
+			slog.Error("Error getting server connection", "error", err)
+		}
+		return
+	}
+
+	// ensure we return the connection to the pool
+	defer requester.ReturnConnection(server, database.Name, database.Clusters[0].Name, client.Ctx.ClientPid)
+
 	server.IssueQuery(query)
 
-	// Copy messages directly from server to client
-	// until we get a ready for query message
 	for {
 		rm, err := protocol.GetRawPgMessage(server.Conn)
 		if err != nil {
-			slog.Error("Error While handling Query", "error", err)
+			slog.Error("Error reading raw message in query handler", "error", err)
+			return
 		}
 		switch rm.Kind {
 		case protocol.BMESSAGE_READY_FOR_QUERY:
 			client.Write(rm.Pack())
-			requester.ReturnConnection(server, database.Name, cluster.Name)
 			return
 		default:
 			client.Write(rm.Pack())
@@ -139,47 +242,73 @@ func handleQuery(
 	}
 }
 
-func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionRequester *server.ConnectionRequester) {
+func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionRequester *server.ConnectionRequester, clientPid int) {
 	defer conn.Close()
-	raw_message, err := protocol.GetRawStartupPgMessage(conn)
+	clientConnection := &ClientConnection{Conn: conn}
+
+	rawMessage, err := protocol.GetRawStartupPgMessage(conn)
 	if err != nil {
-		slog.Error("Error: ", err)
+		slog.Error("Error getting raw startup message", "error", err)
 		return
 	}
+
+	switch rawMessage.Kind {
+	case protocol.FMESSAGE_CANCEL:
+		if errMsg, ok := err.(*protocol.ErrorResponsePgMessage); ok {
+			conn.Write(buildErrorResponsePacket(errMsg))
+			return
+		} else if err != nil {
+			slog.Error("Error getting server connection", "error", err)
+			return
+		}
+		cancelMessage := &protocol.CancelRequestPgMessage{}
+		cancelMessage, err = cancelMessage.Unpack(rawMessage)
+		handleCancelRequest(
+			cancelMessage,
+			config,
+			connectionRequester,
+		)
+		return
+	case protocol.FMESSAGE_STARTUP:
+		break
+	}
+
 	startPgMessage := &protocol.StartupPgMessage{}
-	startPgMessage, err = startPgMessage.Unpack(raw_message)
+	startPgMessage, err = startPgMessage.Unpack(rawMessage)
 	if err != nil {
-		slog.Error("Error: ", err)
+		slog.Error("Error Unpacking startup message", "error", err)
 		return
 	}
 	database, _ := config.GetDatabaseConfigByName(startPgMessage.Database)
 
-	ctx := NewClientConnectionContext(startPgMessage, database)
-	clientConnection := &ClientConnection{Conn: conn, Ctx: ctx}
+	ctx := NewClientConnectionContext(startPgMessage, database, clientPid)
+	clientConnection.Ctx = ctx
 	conn.Write(configPacketShim(ctx))
 
 	for {
-		raw_message, err := protocol.GetRawPgMessage(conn)
+		rawMessage, err := protocol.GetRawPgMessage(conn)
 		if err != nil {
 			slog.Error("Error: ", err)
 			break
 		}
 
-		switch raw_message.Kind {
+		switch rawMessage.Kind {
 		case protocol.FMESSAGE_QUERY:
 			queryPgMessage := &protocol.QueryPgMessage{}
-			queryPgMessage, err := queryPgMessage.Unpack(raw_message)
+			queryPgMessage, err := queryPgMessage.Unpack(rawMessage)
 			if err != nil {
 				slog.Error("Error: ", err)
 			}
 			slog.Info("Recieved Query: ", "query", queryPgMessage.Query)
 			handleQuery(queryPgMessage.Query, clientConnection, connectionRequester, database)
+		case protocol.FMESSAGE_CANCEL:
+			slog.Info("Recieved Cancel Request with no query running. Ignoring")
 		case protocol.FMESSAGE_TERMINATE:
 			slog.Info("Terminating client connection")
 			return
 		case protocol.BMESSAGE_ERROR_RESPONSE:
 			errorPgMessage := &protocol.ErrorResponsePgMessage{}
-			errorPgMessage, err := errorPgMessage.Unpack(raw_message)
+			errorPgMessage, err := errorPgMessage.Unpack(rawMessage)
 			if err != nil {
 				slog.Error("Error parsing error response from server", "error", err)
 			}
@@ -190,9 +319,9 @@ func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionReque
 				"Message", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_MESSAGE),
 				"Detail", errorPgMessage.GetErrorResponseField(protocol.NOTICE_KIND_DETAIL),
 			)
-			clientConnection.Write(raw_message.Pack())
+			clientConnection.Write(rawMessage.Pack())
 		default:
-			slog.Warn("Unknown message kind: ", "kind", fmt.Sprint(raw_message.Kind))
+			slog.Warn("Unknown message kind: ", "kind", fmt.Sprint(rawMessage.Kind))
 		}
 	}
 }

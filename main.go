@@ -14,7 +14,6 @@ import (
 	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/keepalive"
 	"github.com/livinlefevreloca/pgspanner/server"
-	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
 const (
@@ -56,39 +55,35 @@ func main() {
 func RunPoolManager(config *config.SpannerConfig, keepAlive *keepalive.KeepAlive, connectionReqester *server.ConnectionRequester) {
 	// Start the pool manager
 	poolManager := server.NewPoolerManager(config, connectionReqester)
-	notifier := make(chan bool, 10)
-	go poolManager.StartConnectionSweeper(&notifier)
 	for {
-		slog.Info("Pool manager loop")
-		time.AfterFunc(server.CONNECTION_SWEEP_INTERVAL*2, func() {
-			keepAlive.Notify()
-			select {
-			case <-notifier:
-				utils.ClearChannel(notifier)
-			default:
-				slog.Warn("Connection sweeper is not running. Restarting...")
-				go poolManager.StartConnectionSweeper(&notifier)
-			}
-		})
 		select {
 		case request := <-connectionReqester.ReceiveConnectionRequest():
 			slog.Info("Received connection request", "action", request.Event)
 			switch request.Event {
 			case server.ACTION_GET_CONNECTION:
-				poolManager.SendConnectionResponse(*request)
+				poolManager.SendConnection(*request)
 			case server.ACTION_RETURN_CONNECTION:
 				poolManager.ReturnConnection(*request)
-				slog.Info("Returned connection to pool")
+			case server.ACTION_CLOSE_CONNECTION:
+				poolManager.CloseConnection(*request)
+			case server.ACTION_GET_CONNECTION_MAPPING:
+				poolManager.SendConnectionMapping(*request)
 			}
-		case <-time.After(server.CONNECTION_SWEEP_INTERVAL * 4):
+		case <-time.After(server.CONNECTION_SWEEP_INTERVAL):
+			keepAlive.Notify()
 		}
 	}
 }
 
 func clientConnectionHandler(config *config.SpannerConfig, keepAlive *keepalive.KeepAlive, connectionReqester *server.ConnectionRequester) {
+	// Start the client pid counter
+	clientPid := 1
 	slog.Info("Client connection handler started")
+	if config.ListenAddr == "localhost" || config.ListenAddr == "" {
+		config.ListenAddr = "127.0.0.1"
+	}
 	addr := net.TCPAddr{
-		IP:   net.ParseIP("0.0.0.0"),
+		IP:   net.ParseIP(config.ListenAddr),
 		Port: config.ListenPort,
 		Zone: "",
 	}
@@ -105,15 +100,15 @@ func clientConnectionHandler(config *config.SpannerConfig, keepAlive *keepalive.
 		conn, err := l.Accept()
 		if errors.Is(err, os.ErrDeadlineExceeded) {
 			keepAlive.Notify()
-			slog.Info("Client connection handler loop timeout")
+			slog.Debug("Client connection handler loop timeout")
 			continue
 		} else if err != nil {
 			log.Fatal(err)
 			return
 		}
 		slog.Info("Client connected. Starting connection loop...")
-		go client.ConnectionLoop(conn, config, connectionReqester)
+		go client.ConnectionLoop(conn, config, connectionReqester, clientPid)
 		keepAlive.Notify()
-		slog.Info("Client connection handler loop")
+		slog.Debug("Client connection handler loop")
 	}
 }

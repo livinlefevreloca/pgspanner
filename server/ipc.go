@@ -1,9 +1,10 @@
 package server
 
 const (
-	ACTION_GET_CONNECTION    = "GET_CONNECTION"
-	ACTION_RETURN_CONNECTION = "RETURN_CONNECTION"
-	ACTION_CLOSE_CONNECTION  = "CLOSE_CONNECTION"
+	ACTION_GET_CONNECTION         = "GET_CONNECTION"
+	ACTION_RETURN_CONNECTION      = "RETURN_CONNECTION"
+	ACTION_CLOSE_CONNECTION       = "CLOSE_CONNECTION"
+	ACTION_GET_CONNECTION_MAPPING = "GET_CONNECTION_MAPPING"
 )
 
 const (
@@ -12,18 +13,20 @@ const (
 )
 
 type ConnectionRequest struct {
-	Event      string
-	database   string
-	cluster    string
-	Connection *ServerConnection
-	responder  chan ConnectionResponse
+	Event       string
+	database    string
+	cluster     string
+	FrontendPid int
+	Connection  *ServerConnection
+	responder   chan ConnectionResponse
 }
 
 type ConnectionResponse struct {
-	Event  string
-	Result string
-	Detail error
-	Conn   *ServerConnection
+	Event       string
+	Result      string
+	Detail      error
+	ConnMapping []ServerProcessIdentity
+	Conn        *ServerConnection
 }
 
 type ConnectionRequester struct {
@@ -39,14 +42,26 @@ func (cr *ConnectionRequester) ReceiveConnectionRequest() chan *ConnectionReques
 	return cr.channel
 }
 
-func (cr *ConnectionRequester) RequestConnection(database string, cluster string) ConnectionResponse {
+func (cr *ConnectionRequester) RequestConnection(database string, cluster string, clientPid int) ConnectionResponse {
 	response := make(chan ConnectionResponse)
-	request := ConnectionRequest{Event: ACTION_GET_CONNECTION, database: database, cluster: cluster, responder: response}
+	request := ConnectionRequest{Event: ACTION_GET_CONNECTION, database: database, cluster: cluster, responder: response, FrontendPid: clientPid}
 	cr.channel <- &request
 	return <-response
 }
 
-func (cr *ConnectionRequester) ReturnConnection(conn *ServerConnection, database string, cluster string) {
-	request := ConnectionRequest{Event: ACTION_RETURN_CONNECTION, Connection: conn, database: database, cluster: cluster}
+func (cr *ConnectionRequester) ReturnConnection(conn *ServerConnection, database string, cluster string, clientPid int) {
+	var request ConnectionRequest
+	if conn.IsPoisoned() {
+		request = ConnectionRequest{Event: ACTION_CLOSE_CONNECTION, Connection: conn, database: database, cluster: cluster, FrontendPid: clientPid}
+	} else {
+		request = ConnectionRequest{Event: ACTION_RETURN_CONNECTION, Connection: conn, database: database, cluster: cluster, FrontendPid: clientPid}
+	}
 	cr.channel <- &request
+}
+
+func (cr *ConnectionRequester) RequestConnectionMapping(clientPid int) ConnectionResponse {
+	response := make(chan ConnectionResponse)
+	request := ConnectionRequest{Event: ACTION_GET_CONNECTION_MAPPING, responder: response, FrontendPid: clientPid}
+	cr.channel <- &request
+	return <-response
 }

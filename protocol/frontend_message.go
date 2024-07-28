@@ -2,7 +2,6 @@ package protocol
 
 import (
 	"fmt"
-	"log/slog"
 
 	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/utils"
@@ -17,6 +16,7 @@ const (
 	FMESSAGE_QUERY     = 81
 	FMESSAGE_TERMINATE = 88
 	FMESSAGE_PASSWORD  = 112
+	FMESSAGE_CANCEL    = -2
 )
 
 const (
@@ -89,11 +89,9 @@ func (m StartupPgMessage) Pack() []byte {
 	idx = utils.WriteCString(out, idx, m.User)
 	idx = utils.WriteCString(out, idx, "database")
 	idx = utils.WriteCString(out, idx, m.Database)
-	slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	for key, value := range m.Options {
 		idx, out = utils.WriteCStringSafe(out, idx, key)
 		idx, out = utils.WriteCStringSafe(out, idx, value)
-		slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	}
 	idx, out = utils.WriteByteSafe(out, idx, 0) // Null terminator
 
@@ -101,7 +99,6 @@ func (m StartupPgMessage) Pack() []byte {
 	// because we know the index is within the bounds of the slice
 	utils.WriteInt32(out, 0, idx)
 
-	slog.Info("Packed startup message", "message", out[:idx], "length", idx)
 	return out[:idx]
 }
 
@@ -157,4 +154,45 @@ func (m PasswordPgMessage) Pack() []byte {
 	utils.WriteCString(out, idx, m.Password)
 
 	return out
+}
+
+const (
+	CANCEL_REQUEST_CODE int = 80877102
+)
+
+// CancelRequestPgMessage represents the message sent by the client to cancel a query
+type CancelRequestPgMessage struct {
+	BackendPid int
+	BackendKey int
+}
+
+func BuildCancelRequestPgMessage(backendPid int, backendKey int) *CancelRequestPgMessage {
+	return &CancelRequestPgMessage{backendPid, backendKey}
+}
+
+// PgMessage interface implementation for CancelRequestPgMessage
+func (m *CancelRequestPgMessage) Pack() []byte {
+	messageLength := 16 // length + cancelRequestCode + processID + secretKey
+	out := make([]byte, messageLength)
+
+	idx := 0
+	idx = utils.WriteInt32(out, idx, messageLength)
+	idx = utils.WriteInt32(out, idx, CANCEL_REQUEST_CODE)
+	idx = utils.WriteInt32(out, idx, m.BackendPid)
+	idx = utils.WriteInt32(out, idx, m.BackendKey)
+
+	return out
+}
+
+func (m *CancelRequestPgMessage) Unpack(message *RawPgMessage) (*CancelRequestPgMessage, error) {
+	idx := 0
+
+	// The body of the cancel request is 8 bytes long.
+	// Determine the offset to skip the cancel request code
+	offset := len(message.Data) - 8
+	idx += offset // skip the rest of cancel request code
+	idx, processID := utils.ParseInt32(message.Data, idx)
+	idx, secretKey := utils.ParseInt32(message.Data, idx)
+
+	return &CancelRequestPgMessage{processID, secretKey}, nil
 }

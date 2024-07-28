@@ -11,11 +11,14 @@ type ClientConnectionContext struct {
 	Options      map[string]string
 	Database     *config.DatabaseConfig
 	SSL          bool
+	ClientPid    int
+	ClientSecret int
 }
 
 func NewClientConnectionContext(
 	message *protocol.StartupPgMessage,
 	database *config.DatabaseConfig,
+	clientPid int,
 ) *ClientConnectionContext {
 	connCtx := &ClientConnectionContext{
 		User:         message.User,
@@ -23,6 +26,8 @@ func NewClientConnectionContext(
 		Options:      message.Options,
 		Database:     database,
 		SSL:          false,
+		ClientPid:    clientPid,
+		ClientSecret: clientPid,
 	}
 	return connCtx
 }

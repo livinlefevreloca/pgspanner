@@ -1,10 +1,13 @@
 package server
 
 import (
+	"fmt"
 	"log/slog"
+	"slices"
 	"time"
 
 	"github.com/livinlefevreloca/pgspanner/config"
+	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
 const (
@@ -12,62 +15,121 @@ const (
 )
 
 type Pooler struct {
-	connections   []ServerConnection
-	clusterConfig *config.ClusterConfig
-	poolConfig    *config.PoolConfig
+	connections    []*ServerConnection
+	clusterConfig  *config.ClusterConfig
+	databaseConfig *config.DatabaseConfig
 }
 
 func newPooler(
+	databaseConfig *config.DatabaseConfig,
 	clusterConfig *config.ClusterConfig,
-	poolConfig *config.PoolConfig,
 ) *Pooler {
-	conections := make([]ServerConnection, 0, poolConfig.MaxOpenConns)
+	conections := make([]*ServerConnection, 0, databaseConfig.PoolSettings.MaxOpenConns)
 	return &Pooler{
-		connections:   conections,
-		clusterConfig: clusterConfig,
-		poolConfig:    poolConfig,
+		connections:    conections,
+		databaseConfig: databaseConfig,
+		clusterConfig:  clusterConfig,
 	}
 }
 
-func (p *Pooler) getConnection() (*ServerConnection, error) {
+func (p *Pooler) getPoolSettings() *config.PoolConfig {
+	return &p.databaseConfig.PoolSettings
+}
+
+func (p *Pooler) getAddr() string {
+	return fmt.Sprintf("%s:%d", p.clusterConfig.Host, p.clusterConfig.Port)
+}
+
+func (p *Pooler) removeConnection(connection *ServerConnection) {
+	if len(p.connections) == 0 {
+		return
+	}
+	var index int
+	for i, conn := range p.connections {
+		if conn.GetBackendPid() == connection.GetBackendPid() {
+			index = i
+			break
+		}
+	}
+	slices.Delete(p.connections, index, index)
+}
+
+func (p *Pooler) getConnection(frontendPid int) (*ServerConnection, error) {
 	connectionCount := len(p.connections)
+	poolSettings := p.getPoolSettings()
 	var connection *ServerConnection
 	var err error
-	if connectionCount == 0 {
-		connection, err = CreateServerConnection(p.clusterConfig)
-		if err != nil {
-			slog.Error(
-				"Error creating connection",
-				"Pooler", p.clusterConfig.Name,
-				"Host", p.clusterConfig.Host,
-				"Port", p.clusterConfig.Port,
-				"Error", err,
-			)
-			return nil, err
+	for {
+		if connectionCount == 0 {
+			connection, err = CreateServerConnection(p.databaseConfig, p.clusterConfig)
+			if err != nil {
+				slog.Error(
+					"Error creating connection",
+					"Pooler", p.clusterConfig.Name,
+					"Error", err,
+				)
+				return nil, err
+			}
+			break
 		}
-	} else {
-		connection = &p.connections[connectionCount-1]
-		p.connections = p.connections[:connectionCount-1]
+
+		var ptr **ServerConnection
+		p.connections, ptr = utils.Pop(p.connections)
+		connection = *ptr
+
+		if connection.IsPoisoned() {
+			connection.Close()
+			connectionCount = len(p.connections)
+		} else if connection.GetAge() > int64(poolSettings.MaxConnLifetime) {
+			slog.Info(
+				"Closing connection. Connection has exceeded max lifetime",
+				"Pooler", p.getAddr(),
+				"BackendPid", connection.GetBackendPid(),
+			)
+			connection.Close()
+			connectionCount = len(p.connections)
+		} else {
+			break
+		}
 	}
+
 	return connection, nil
 }
 
-func (p *Pooler) returnConnection(connection ServerConnection) {
-	if len(p.connections) < p.poolConfig.MaxOpenConns {
-		p.connections = append(p.connections, connection)
+func (p *Pooler) returnConnection(connection ServerConnection, frontendPid int) {
+	poolSettings := p.getPoolSettings()
+	if len(p.connections) < poolSettings.MaxOpenConns {
+		slog.Info(
+			"Returning connection",
+			"Pooler", p.getAddr(),
+			"BackendPid", connection.GetBackendPid(),
+		)
+		p.connections = append(p.connections, &connection)
+	} else if connection.GetAge() > int64(poolSettings.MaxConnLifetime) {
+		slog.Info(
+			"Closing connection. Connection has exceeded max lifetime",
+			"Pooler", p.getAddr(),
+			"BackendPid", connection.GetBackendPid(),
+		)
+		connection.Close()
 	} else {
 		slog.Info(
 			"Closing connection. Pool is full",
-			"Pooler", p.clusterConfig.Name,
+			"Pooler", p.getAddr(),
 			"BackendPid", connection.GetBackendPid(),
 		)
 		connection.Close()
 	}
 }
 
+func (p *Pooler) CloseConnection(connection *ServerConnection, frontendPid int) {
+	connection.Close()
+}
+
 type PoolerManager struct {
 	poolers          map[string]map[string]*Pooler
 	ConnectionServer *ConnectionRequester
+	connectionTable  map[int][]ServerProcessIdentity
 }
 
 func NewPoolerManager(config *config.SpannerConfig, server *ConnectionRequester) *PoolerManager {
@@ -77,7 +139,7 @@ func NewPoolerManager(config *config.SpannerConfig, server *ConnectionRequester)
 			if poolers[database.Name] == nil {
 				poolers[database.Name] = make(map[string]*Pooler)
 			}
-			poolers[database.Name][cluster.Name] = newPooler(&cluster, &database.PoolSettings)
+			poolers[database.Name][cluster.Name] = newPooler(&database, &cluster)
 		}
 	}
 	return &PoolerManager{
@@ -86,10 +148,10 @@ func NewPoolerManager(config *config.SpannerConfig, server *ConnectionRequester)
 	}
 }
 
-func (pm *PoolerManager) SendConnectionResponse(request ConnectionRequest) {
+func (pm *PoolerManager) SendConnection(request ConnectionRequest) {
 	pooler := pm.poolers[request.database][request.cluster]
 	var response ConnectionResponse
-	connection, err := pooler.getConnection()
+	connection, err := pooler.getConnection(request.FrontendPid)
 	if err != nil {
 		response = ConnectionResponse{
 			Event:  ACTION_GET_CONNECTION,
@@ -103,43 +165,78 @@ func (pm *PoolerManager) SendConnectionResponse(request ConnectionRequest) {
 			Conn:  connection,
 		}
 	}
+	if pm.connectionTable == nil {
+		pm.connectionTable = make(map[int][]ServerProcessIdentity)
+	}
+	if pm.connectionTable[request.FrontendPid] == nil {
+		pm.connectionTable[request.FrontendPid] = make([]ServerProcessIdentity, 0)
+	}
+	pm.connectionTable[request.FrontendPid] = append(pm.connectionTable[request.FrontendPid], connection.GetServerIdentity())
 	request.responder <- response
-	slog.Info(
-		"Sent connection response",
-		"cluster", request.cluster,
-		"database", request.database,
+}
+
+func (pm *PoolerManager) CloseConnection(request ConnectionRequest) {
+	pooler := pm.poolers[request.database][request.cluster]
+	if request.Connection == nil {
+		slog.Error(
+			"Received nil connection in CloseConnection",
+			"cluster", request.cluster,
+			"database", request.database,
+		)
+		return
+	}
+	pm.connectionTable[request.FrontendPid] = utils.DeleteFromUnsorted[ServerProcessIdentity](
+		pm.connectionTable[request.FrontendPid],
+		request.Connection.GetServerIdentity(),
 	)
+	pooler.CloseConnection(request.Connection, request.FrontendPid)
 }
 
 func (pm *PoolerManager) ReturnConnection(request ConnectionRequest) {
 	pooler := pm.poolers[request.database][request.cluster]
-	pooler.returnConnection(*request.Connection)
-	slog.Info(
-		"Returned connection",
-		"cluster", request.cluster,
-		"database", request.database,
+	if request.Connection == nil {
+		slog.Error(
+			"Received nil connection in ReturnConnection",
+			"cluster", request.cluster,
+			"database", request.database,
+		)
+		return
+	}
+	pm.connectionTable[request.FrontendPid] = utils.DeleteFromUnsorted[ServerProcessIdentity](
+		pm.connectionTable[request.FrontendPid],
+		request.Connection.GetServerIdentity(),
 	)
+	pooler.returnConnection(*request.Connection, request.FrontendPid)
 }
 
-func (pm *PoolerManager) StartConnectionSweeper(notifier *chan bool) {
-	for {
-		for _, database := range pm.poolers {
-			for _, pooler := range database {
-				for _, connection := range pooler.connections {
-					age := connection.GetAge()
-					if age > int64(pooler.poolConfig.MaxConnLifetime) {
-						slog.Info(
-							"Closing connection due to age",
-							"pid", connection.GetBackendPid(),
-							"Pooler", pooler.clusterConfig.Name,
-							"Age", age,
-						)
-						connection.Close()
-					}
-				}
-			}
-		}
-		*notifier <- true
-		time.Sleep(CONNECTION_SWEEP_INTERVAL)
+type ConnectionMappingNotFound struct {
+	FrontendPid int
+}
+
+func (e ConnectionMappingNotFound) Error() string {
+	return fmt.Sprintf("No connections found for FrontendPid: %d", e.FrontendPid)
+}
+
+func (pm *PoolerManager) SendConnectionMapping(request ConnectionRequest) {
+	if pm.connectionTable == nil {
+		pm.connectionTable = make(map[int][]ServerProcessIdentity)
 	}
+
+	var serverIdentities []ServerProcessIdentity
+	var result string
+	serverIdentities, ok := pm.connectionTable[request.FrontendPid]
+	if !ok {
+		serverIdentities = make([]ServerProcessIdentity, 0)
+		result = RESULT_ERROR
+	} else {
+		result = RESULT_SUCCESS
+	}
+
+	response := ConnectionResponse{
+		Event:       ACTION_GET_CONNECTION_MAPPING,
+		Result:      result,
+		Detail:      ConnectionMappingNotFound{FrontendPid: request.FrontendPid},
+		ConnMapping: serverIdentities,
+	}
+	request.responder <- response
 }

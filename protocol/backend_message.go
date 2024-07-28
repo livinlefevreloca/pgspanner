@@ -440,6 +440,10 @@ func (m *ErrorResponsePgMessage) GetErrorResponseField(kind string) string {
 	return m.Fields[kind].Value
 }
 
+func (m *ErrorResponsePgMessage) Error() string {
+	return m.GetErrorResponseField(NOTICE_KIND_MESSAGE)
+}
+
 func BuildErrorResponsePgMessage(params map[string]string) *ErrorResponsePgMessage {
 	fields := make(map[string]ErrorField)
 	for key, value := range params {

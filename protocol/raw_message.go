@@ -1,9 +1,11 @@
 package protocol
 
 import (
+	"bytes"
 	"io"
 	"log/slog"
 	"net"
+	"time"
 
 	"github.com/livinlefevreloca/pgspanner/utils"
 )
@@ -45,6 +47,15 @@ func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
 		}
 		// Read the length again to get the actual length of the startup message
 		length, err = utils.ReadInt32(conn)
+	} else if length == 16 {
+		// This is a cancel request
+		data := make([]byte, 12)
+		_, err = io.ReadFull(conn, data)
+		if err != nil {
+			slog.Error("Error reading cancel request in startup message")
+			return nil, err
+		}
+		return &RawPgMessage{FMESSAGE_CANCEL, 16, data}, nil
 	}
 
 	messageLength := length - 4 // 4 bytes for the length
@@ -60,11 +71,22 @@ func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
 }
 
 // Reads a raw message from a connection
-func GetRawPgMessage(conn net.Conn) (*RawPgMessage, error) {
+func GetRawPgMessage(conn io.Reader) (*RawPgMessage, error) {
 	header := make([]byte, 5)
 	_, err := io.ReadFull(conn, header)
 	if err != nil {
 		return nil, err
+	}
+
+	// This is a cancel request
+	if bytes.Equal(header, []byte{0x00, 0x00, 0x00, 0x10, 0x04}) {
+		data := make([]byte, 11)
+		_, err = io.ReadFull(conn, data)
+		if err != nil {
+			slog.Error("Error reading cancel request")
+			return nil, err
+		}
+		return &RawPgMessage{FMESSAGE_CANCEL, 16, data}, nil
 	}
 
 	// Read the kind of message from the header
@@ -83,6 +105,76 @@ func GetRawPgMessage(conn net.Conn) (*RawPgMessage, error) {
 		return nil, err
 	}
 
+	return &RawPgMessage{kind, length, data}, nil
+}
+
+type AbortRead struct{}
+
+func (ar AbortRead) Error() string {
+	return "Aborting Read operation"
+}
+
+// Reads a raw message from a connection
+func GetRawPgMessageWithCancel(
+	conn net.Conn,
+	rx chan bool,
+	tx chan bool,
+	deadline time.Duration,
+	ctx string,
+) (*RawPgMessage, error) {
+	header := make([]byte, 5)
+	var err error
+
+	// Block on reading the header until we get a message or a cancel signal
+	for {
+		conn.SetReadDeadline(time.Now().Add(deadline))
+		_, err := io.ReadFull(conn, header)
+		if err != nil {
+			if err, ok := err.(net.Error); ok && err.Timeout() {
+				select {
+				case <-rx:
+					slog.Info("Received cancel signal. Aborting read", "ctx", ctx)
+					conn.SetReadDeadline(time.Time{})
+					return nil, &AbortRead{}
+				default:
+					continue
+				}
+			} else {
+				return nil, err
+			}
+		}
+		tx <- true
+		// Reset the read deadline to not timeout
+		conn.SetReadDeadline(time.Time{})
+		break
+	}
+
+	// This is a cancel request
+	if bytes.Equal(header, []byte{0x00, 0x00, 0x00, 0x10, 0x4d}) {
+		data := make([]byte, 11)
+		_, err = io.ReadFull(conn, data)
+		if err != nil {
+			slog.Error("Error reading cancel request", "ctx", ctx)
+			return nil, err
+		}
+		return &RawPgMessage{FMESSAGE_CANCEL, 16, data}, nil
+	}
+
+	// Read the kind of message from the header
+	kind := int(header[0])
+
+	// Read the length of the message from the header including the kind and the length itself
+	_, length := utils.ParseInt32(header, 1)
+
+	toRead := length - 4
+	data := make([]byte, toRead)
+	if toRead == 0 {
+		return &RawPgMessage{kind, length, data}, nil
+	}
+	_, err = io.ReadFull(conn, data)
+	if err != nil {
+		return nil, err
+	}
 	return &RawPgMessage{kind, length, data}, nil
 }
 

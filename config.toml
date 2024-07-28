@@ -1,6 +1,6 @@
 logLevel = "Debug"
 ListenPort = 8000
-ListenAddress = "localhost"
+ListenAddr = "localhost"
 
 # Database Configuration for "lyfe"
 [[databases]]
