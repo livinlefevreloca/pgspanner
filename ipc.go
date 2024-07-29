@@ -1,4 +1,4 @@
-package server
+package main
 
 const (
 	ACTION_GET_CONNECTION         = "GET_CONNECTION"

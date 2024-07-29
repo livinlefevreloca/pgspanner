@@ -1,4 +1,4 @@
-package config
+package main
 
 import "fmt"
 
@@ -12,6 +12,10 @@ type ClusterConfig struct {
 
 func (c *ClusterConfig) display() string {
 	return "Cluster: " + c.Name + " Host: " + c.Host + " Port: " + fmt.Sprint(c.Port) + " User: " + c.User + " PasswordEnv: " + c.PasswordEnv
+}
+
+func (c *ClusterConfig) GetAddr() string {
+	return fmt.Sprintf("%s:%d", c.Host, c.Port)
 }
 
 type PoolConfig struct {

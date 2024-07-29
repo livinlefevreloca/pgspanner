@@ -1,4 +1,4 @@
-package server
+package main
 
 import (
 	"crypto/md5"
@@ -7,9 +7,8 @@ import (
 	"net"
 	"os"
 
-	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/protocol"
-	"github.com/livinlefevreloca/pgspanner/utils"
+	"github.com/livinlefevreloca/pgspanner/protocol/parsing"
 )
 
 // Functions for handling authentication with the server
@@ -43,10 +42,10 @@ func getMd5Password(password string, username string, salt []byte) string {
 
 func handleServerAuth(
 	conn net.Conn,
-	clusterConfig *config.ClusterConfig,
+	clusterConfig *ClusterConfig,
 	raw_message *protocol.RawPgMessage,
 ) {
-	_, authIndicator := utils.ParseInt32(raw_message.Data, 0)
+	_, authIndicator := parsing.ParseInt32(raw_message.Data, 0)
 
 	switch authIndicator {
 	case protocol.AUTH_OK:

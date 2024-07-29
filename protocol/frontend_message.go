@@ -3,8 +3,7 @@ package protocol
 import (
 	"fmt"
 
-	"github.com/livinlefevreloca/pgspanner/config"
-	"github.com/livinlefevreloca/pgspanner/utils"
+	"github.com/livinlefevreloca/pgspanner/protocol/parsing"
 )
 
 /// An implementation of the Postgres protocol messages that are sent by the client to the server
@@ -31,11 +30,11 @@ type StartupPgMessage struct {
 	Options         map[string]string
 }
 
-func BuildStartupMessage(clusterConfig *config.ClusterConfig) *StartupPgMessage {
+func BuildStartupMessage(user string, database string) *StartupPgMessage {
 	return &StartupPgMessage{
 		ProtocolVersion: SUPPORTED_PROTOCOL_VERSION,
-		User:            clusterConfig.User,
-		Database:        clusterConfig.Name,
+		User:            user,
+		Database:        database,
 		Options:         map[string]string{"client_encoding": "UTF8", "application_name": "pgspanner"},
 	}
 }
@@ -43,7 +42,7 @@ func BuildStartupMessage(clusterConfig *config.ClusterConfig) *StartupPgMessage 
 // PgMessage interface implementation for StartupPgMessage
 func (m *StartupPgMessage) Unpack(message *RawPgMessage) (*StartupPgMessage, error) {
 	idx := 0
-	idx, protocolVersion := utils.ParseInt32(message.Data, idx)
+	idx, protocolVersion := parsing.ParseInt32(message.Data, idx)
 	if protocolVersion != SUPPORTED_PROTOCOL_VERSION {
 		return nil, fmt.Errorf("Unsupported protocol version: %d", protocolVersion)
 	}
@@ -55,11 +54,11 @@ func (m *StartupPgMessage) Unpack(message *RawPgMessage) (*StartupPgMessage, err
 	var key, value string
 	var err error
 	for idx < remaining {
-		idx, key, err = utils.ParseCString(message.Data, idx)
+		idx, key, err = parsing.ParseCString(message.Data, idx)
 		if err != nil {
 			return nil, err
 		}
-		idx, value, err = utils.ParseCString(message.Data, idx)
+		idx, value, err = parsing.ParseCString(message.Data, idx)
 		if err != nil {
 			return nil, err
 		}
@@ -83,21 +82,21 @@ func (m StartupPgMessage) Pack() []byte {
 	idx := 0
 
 	// Write a dummy length for now
-	idx = utils.WriteInt32(out, idx, -1)
-	idx = utils.WriteInt32(out, idx, m.ProtocolVersion)
-	idx = utils.WriteCString(out, idx, "user")
-	idx = utils.WriteCString(out, idx, m.User)
-	idx = utils.WriteCString(out, idx, "database")
-	idx = utils.WriteCString(out, idx, m.Database)
+	idx = parsing.WriteInt32(out, idx, -1)
+	idx = parsing.WriteInt32(out, idx, m.ProtocolVersion)
+	idx = parsing.WriteCString(out, idx, "user")
+	idx = parsing.WriteCString(out, idx, m.User)
+	idx = parsing.WriteCString(out, idx, "database")
+	idx = parsing.WriteCString(out, idx, m.Database)
 	for key, value := range m.Options {
-		idx, out = utils.WriteCStringSafe(out, idx, key)
-		idx, out = utils.WriteCStringSafe(out, idx, value)
+		idx, out = parsing.WriteCStringSafe(out, idx, key)
+		idx, out = parsing.WriteCStringSafe(out, idx, value)
 	}
-	idx, out = utils.WriteByteSafe(out, idx, 0) // Null terminator
+	idx, out = parsing.WriteByteSafe(out, idx, 0) // Null terminator
 
 	// Write the actual length. We use the non safe version of WriteInt32
 	// because we know the index is within the bounds of the slice
-	utils.WriteInt32(out, 0, idx)
+	parsing.WriteInt32(out, 0, idx)
 
 	return out[:idx]
 }
@@ -122,9 +121,9 @@ func (m QueryPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(FMESSAGE_QUERY))
-	idx = utils.WriteInt32(out, 1, messageLength)
-	utils.WriteCString(out, idx, m.Query)
+	idx = parsing.WriteByte(out, idx, byte(FMESSAGE_QUERY))
+	idx = parsing.WriteInt32(out, 1, messageLength)
+	parsing.WriteCString(out, idx, m.Query)
 
 	return out
 }
@@ -149,9 +148,9 @@ func (m PasswordPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(FMESSAGE_PASSWORD))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	utils.WriteCString(out, idx, m.Password)
+	idx = parsing.WriteByte(out, idx, byte(FMESSAGE_PASSWORD))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	parsing.WriteCString(out, idx, m.Password)
 
 	return out
 }
@@ -176,10 +175,10 @@ func (m *CancelRequestPgMessage) Pack() []byte {
 	out := make([]byte, messageLength)
 
 	idx := 0
-	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteInt32(out, idx, CANCEL_REQUEST_CODE)
-	idx = utils.WriteInt32(out, idx, m.BackendPid)
-	idx = utils.WriteInt32(out, idx, m.BackendKey)
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, CANCEL_REQUEST_CODE)
+	idx = parsing.WriteInt32(out, idx, m.BackendPid)
+	idx = parsing.WriteInt32(out, idx, m.BackendKey)
 
 	return out
 }
@@ -191,8 +190,8 @@ func (m *CancelRequestPgMessage) Unpack(message *RawPgMessage) (*CancelRequestPg
 	// Determine the offset to skip the cancel request code
 	offset := len(message.Data) - 8
 	idx += offset // skip the rest of cancel request code
-	idx, processID := utils.ParseInt32(message.Data, idx)
-	idx, secretKey := utils.ParseInt32(message.Data, idx)
+	idx, processID := parsing.ParseInt32(message.Data, idx)
+	idx, secretKey := parsing.ParseInt32(message.Data, idx)
 
 	return &CancelRequestPgMessage{processID, secretKey}, nil
 }

@@ -1,40 +1,17 @@
-package client
+package main
 
 import (
+	"errors"
 	"fmt"
+	"log"
 	"log/slog"
 	"net"
+	"os"
+	"time"
 
-	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/protocol"
-	"github.com/livinlefevreloca/pgspanner/server"
-	"github.com/livinlefevreloca/pgspanner/utils"
+	"github.com/livinlefevreloca/pgspanner/protocol/parsing"
 )
-
-type ClientConnection struct {
-	Conn net.Conn
-	Ctx  *ClientConnectionContext
-}
-
-// Implement Writer interface for ClientConnection
-func (c *ClientConnection) Write(data []byte) (int, error) {
-	if n, err := c.Conn.Write(data); err != nil {
-		slog.Error("Error writing to client connection", "error", err)
-		return n, err
-	} else {
-		return n, nil
-	}
-}
-
-// Implement Reader interface for ClientConnection
-func (c *ClientConnection) Read(data []byte) (int, error) {
-	if n, err := c.Conn.Read(data); err != nil {
-		slog.Error("Error reading from client connection: ", "error", err)
-		return n, err
-	} else {
-		return n, nil
-	}
-}
 
 func staticServerConfiguration(ctx *ClientConnectionContext) *map[string]string {
 	return &map[string]string{
@@ -60,16 +37,16 @@ func configPacketShim(ctx *ClientConnectionContext) []byte {
 
 	// For now just send an authentication ok message
 	authPgMessage := protocol.BuildAuthenticationOkPgMessage()
-	idx = utils.WriteBytes(buffer, idx, authPgMessage.Pack())
+	idx = parsing.WriteBytes(buffer, idx, authPgMessage.Pack())
 	for k, v := range *serverConfig {
 		configPgMessage := protocol.BuildParameterStatusPgMessage(k, v)
-		idx = utils.WriteBytes(buffer, idx, configPgMessage.Pack())
+		idx = parsing.WriteBytes(buffer, idx, configPgMessage.Pack())
 	}
 	keyDataPgMessage := protocol.BuildBackendKeyDataPgMessage(ctx.ClientPid, ctx.ClientSecret)
-	idx = utils.WriteBytes(buffer, idx, keyDataPgMessage.Pack())
+	idx = parsing.WriteBytes(buffer, idx, keyDataPgMessage.Pack())
 
 	readyForQueryPgMessage := protocol.BuildReadyForQueryPgMessage(byte('I'))
-	idx = utils.WriteBytes(buffer, idx, readyForQueryPgMessage.Pack())
+	idx = parsing.WriteBytes(buffer, idx, readyForQueryPgMessage.Pack())
 
 	return buffer[:idx]
 }
@@ -82,8 +59,8 @@ func buildErrorResponsePacket(errMsg *protocol.ErrorResponsePgMessage) []byte {
 
 func handleCancelRequest(
 	cancelMessage *protocol.CancelRequestPgMessage,
-	config *config.SpannerConfig,
-	requester *server.ConnectionRequester,
+	config *SpannerConfig,
+	requester *ConnectionRequester,
 ) {
 	slog.Info(
 		"Recieved Cancel Request. Forwarding to server",
@@ -112,7 +89,8 @@ func handleCancelRequest(
 			slog.Error("Cluster config not found", "cluster", serverProcess.ClusterHost)
 			continue
 		}
-		serverConn, err := server.CreateUnititializedServerConnection(database, cluster)
+		serverConn, err := CreateUnititializedServerConnection(database, cluster)
+		defer serverConn.Close()
 		if serverProcess.BackendPid == serverConn.GetBackendPid() {
 			continue
 		}
@@ -138,12 +116,12 @@ func handleCancelRequest(
 }
 
 func getServerConnection(
-	requester *server.ConnectionRequester,
-	database *config.DatabaseConfig,
+	requester *ConnectionRequester,
+	database *DatabaseConfig,
 	clusterHost string,
 	clusterPort int,
 	clientPid int,
-) (*server.ServerConnection, error) {
+) (*ServerConnection, error) {
 	cluster, ok := database.GetClusterConfigByHostPort(clusterHost, clusterPort)
 	if !ok {
 		slog.Error("Specified cluster config does not exist")
@@ -158,9 +136,9 @@ func getServerConnection(
 	response := requester.RequestConnection(database.Name, cluster.Name, clientPid)
 
 	switch response.Result {
-	case server.RESULT_SUCCESS:
+	case RESULT_SUCCESS:
 		break
-	case server.RESULT_ERROR:
+	case RESULT_ERROR:
 		slog.Error("Error Requesting Connection", "error", response.Detail.Error())
 		params := map[string]string{
 			protocol.NOTICE_KIND_SEVERITY_NONLOCALIZED: "ERROR",
@@ -185,16 +163,16 @@ func getServerConnection(
 }
 
 func getSeverConnectionMapping(
-	requester *server.ConnectionRequester,
+	requester *ConnectionRequester,
 	clientPid int,
-) ([]server.ServerProcessIdentity, error) {
+) ([]ServerProcessIdentity, error) {
 	slog.Info(
 		"Requesting Connection Mapping",
 		"ClientPid", clientPid,
 	)
 	response := requester.RequestConnectionMapping(clientPid)
 
-	if response.Result == server.RESULT_ERROR {
+	if response.Result == RESULT_ERROR {
 		slog.Error("Error Requesting Connection Mapping", "error", response.Detail.Error())
 		return nil, response.Detail
 	}
@@ -205,8 +183,8 @@ func getSeverConnectionMapping(
 func handleQuery(
 	query string,
 	client *ClientConnection,
-	requester *server.ConnectionRequester,
-	database *config.DatabaseConfig,
+	requester *ConnectionRequester,
+	database *DatabaseConfig,
 ) {
 	// Get a connection from the pool
 	cluster := database.Clusters[0]
@@ -242,7 +220,7 @@ func handleQuery(
 	}
 }
 
-func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionRequester *server.ConnectionRequester, clientPid int) {
+func ConnectionLoop(conn net.Conn, config *SpannerConfig, connectionRequester *ConnectionRequester, clientPid int) {
 	defer conn.Close()
 	clientConnection := &ClientConnection{Conn: conn}
 
@@ -323,5 +301,48 @@ func ConnectionLoop(conn net.Conn, config *config.SpannerConfig, connectionReque
 		default:
 			slog.Warn("Unknown message kind: ", "kind", fmt.Sprint(rawMessage.Kind))
 		}
+	}
+}
+
+func clientConnectionHandler(
+	config *SpannerConfig,
+	keepAlive *KeepAlive,
+	connectionReqester *ConnectionRequester,
+) {
+	// Start the client pid counter
+	clientPid := 0
+	slog.Info("Client connection handler started")
+	if config.ListenAddr == "localhost" || config.ListenAddr == "" {
+		config.ListenAddr = "127.0.0.1"
+	}
+	addr := net.TCPAddr{
+		IP:   net.ParseIP(config.ListenAddr),
+		Port: config.ListenPort,
+		Zone: "",
+	}
+
+	l, err := net.ListenTCP("tcp", &addr)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	slog.Info("Listening on port 8000")
+	defer l.Close()
+	for {
+		l.SetDeadline(time.Now().Add(TIMEOUT))
+		conn, err := l.Accept()
+		if errors.Is(err, os.ErrDeadlineExceeded) {
+			keepAlive.Notify()
+			slog.Debug("Client connection handler loop timeout")
+			continue
+		} else if err != nil {
+			log.Fatal(err)
+			return
+		}
+		slog.Info("Client connected. Starting connection loop...")
+		go ConnectionLoop(conn, config, connectionReqester, clientPid)
+		clientPid++
+		keepAlive.Notify()
+		slog.Debug("Client connection handler loop")
 	}
 }

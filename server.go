@@ -1,13 +1,47 @@
-package server
+package main
 
 import (
 	"log/slog"
 	"net"
 	"time"
 
-	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/protocol"
 )
+
+type ServerProcessIdentity struct {
+	BackendPid   int
+	BackendKey   int
+	DatabaseName string
+	ClusterHost  string
+	ClusterPort  int
+}
+
+type serverConnectionContext struct {
+	Parmeters      map[string]string
+	ServerIdentity ServerProcessIdentity
+	Database       *DatabaseConfig
+	Cluster        *ClusterConfig
+}
+
+func newServerConnectionContext(
+	clusterConfig *ClusterConfig,
+	databaseConfig *DatabaseConfig,
+
+) *serverConnectionContext {
+	return &serverConnectionContext{
+		Parmeters: make(map[string]string),
+		Database:  databaseConfig,
+		Cluster:   clusterConfig,
+	}
+}
+
+func (s *serverConnectionContext) GetParameter(key string) string {
+	return s.Parmeters[key]
+}
+
+func (s *serverConnectionContext) SetParameter(key string, value string) {
+	s.Parmeters[key] = value
+}
 
 // An object representing a connection to a server
 type ServerConnection struct {
@@ -33,11 +67,11 @@ func (s *ServerConnection) GetServerIdentity() ServerProcessIdentity {
 	return s.Context.ServerIdentity
 }
 
-func (s *ServerConnection) GetClusterConfig() *config.ClusterConfig {
+func (s *ServerConnection) GetClusterConfig() *ClusterConfig {
 	return s.Context.Cluster
 }
 
-func (s *ServerConnection) GetDatabaseConfig() *config.DatabaseConfig {
+func (s *ServerConnection) GetDatabaseConfig() *DatabaseConfig {
 	return s.Context.Database
 }
 
@@ -117,8 +151,8 @@ func handleStartup(
 }
 
 func CreateUnititializedServerConnection(
-	databaseConfig *config.DatabaseConfig,
-	clusterConfig *config.ClusterConfig,
+	databaseConfig *DatabaseConfig,
+	clusterConfig *ClusterConfig,
 ) (*ServerConnection, error) {
 	serverContext := newServerConnectionContext(clusterConfig, databaseConfig)
 	addrs, err := net.LookupHost(clusterConfig.Host)
@@ -145,8 +179,8 @@ func CreateUnititializedServerConnection(
 }
 
 func CreateServerConnection(
-	databaseConfig *config.DatabaseConfig,
-	clusterConfig *config.ClusterConfig,
+	databaseConfig *DatabaseConfig,
+	clusterConfig *ClusterConfig,
 ) (*ServerConnection, error) {
 
 	server, err := CreateUnititializedServerConnection(databaseConfig, clusterConfig)
@@ -154,13 +188,20 @@ func CreateServerConnection(
 		return nil, err
 	}
 
-	startupMessage := protocol.BuildStartupMessage(clusterConfig)
+	startupMessage := protocol.BuildStartupMessage(clusterConfig.User, clusterConfig.Name)
 	server.Write(startupMessage.Pack())
 
 	server = handleStartup(server)
 	if err != nil {
 		return nil, err
 	}
+
+	slog.Info(
+		"Created new server connection",
+		"Cluster", clusterConfig.GetAddr(),
+		"Database", databaseConfig.Name,
+		"BackendPid", server.GetBackendPid(),
+	)
 
 	return server, nil
 }

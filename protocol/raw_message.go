@@ -7,7 +7,7 @@ import (
 	"net"
 	"time"
 
-	"github.com/livinlefevreloca/pgspanner/utils"
+	"github.com/livinlefevreloca/pgspanner/protocol/parsing"
 )
 
 // RawPgMessage is a low level representation of a message
@@ -35,7 +35,7 @@ func handleSSLRequest(conn net.Conn) error {
 }
 
 func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
-	length, err := utils.ReadInt32(conn)
+	length, err := parsing.ReadInt32(conn)
 	if err != nil {
 		return nil, err
 	}
@@ -46,7 +46,7 @@ func GetRawStartupPgMessage(conn net.Conn) (*RawPgMessage, error) {
 			return nil, err
 		}
 		// Read the length again to get the actual length of the startup message
-		length, err = utils.ReadInt32(conn)
+		length, err = parsing.ReadInt32(conn)
 	} else if length == 16 {
 		// This is a cancel request
 		data := make([]byte, 12)
@@ -93,7 +93,7 @@ func GetRawPgMessage(conn io.Reader) (*RawPgMessage, error) {
 	kind := int(header[0])
 
 	// Read the length of the message from the header including the kind and the length itself
-	_, length := utils.ParseInt32(header, 1)
+	_, length := parsing.ParseInt32(header, 1)
 
 	toRead := length - 4
 	data := make([]byte, toRead)
@@ -164,7 +164,7 @@ func GetRawPgMessageWithCancel(
 	kind := int(header[0])
 
 	// Read the length of the message from the header including the kind and the length itself
-	_, length := utils.ParseInt32(header, 1)
+	_, length := parsing.ParseInt32(header, 1)
 
 	toRead := length - 4
 	data := make([]byte, toRead)
@@ -182,7 +182,7 @@ func GetRawPgMessageWithCancel(
 func (rm RawPgMessage) Unpack(data []byte) RawPgMessage {
 	idx := 0
 	kind := int(data[idx])
-	idx, length := utils.ParseInt32(data, idx+1)
+	idx, length := parsing.ParseInt32(data, idx+1)
 	data = data[idx+1:]
 
 	return RawPgMessage{kind, length, data}
@@ -192,9 +192,9 @@ func (rm RawPgMessage) Pack() []byte {
 	out := make([]byte, rm.Length+1)
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(rm.Kind))
-	idx = utils.WriteInt32(out, idx, rm.Length)
-	utils.WriteBytes(out, idx, rm.Data)
+	idx = parsing.WriteByte(out, idx, byte(rm.Kind))
+	idx = parsing.WriteInt32(out, idx, rm.Length)
+	parsing.WriteBytes(out, idx, rm.Data)
 
 	return out
 }

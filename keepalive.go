@@ -1,21 +1,17 @@
-package keepalive
+package main
 
 import (
 	"fmt"
 	"log/slog"
 	"time"
-
-	"github.com/livinlefevreloca/pgspanner/config"
-	"github.com/livinlefevreloca/pgspanner/server"
-	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
 func StartComponentWithKeepAlive(
 	name string,
-	component func(config *config.SpannerConfig, keepAlive *KeepAlive, connectionReqester *server.ConnectionRequester),
+	component func(config *SpannerConfig, keepAlive *KeepAlive, connectionReqester *ConnectionRequester),
 	timeout time.Duration,
-	config *config.SpannerConfig,
-	connectionReqester *server.ConnectionRequester,
+	config *SpannerConfig,
+	connectionReqester *ConnectionRequester,
 ) *KeepAlive {
 	keepAlive := NewKeepAlive(
 		name,
@@ -30,9 +26,9 @@ func StartComponentWithKeepAlive(
 }
 
 func RunKeepAliveHandler(
-	config *config.SpannerConfig,
+	config *SpannerConfig,
 	keepAlives []*KeepAlive,
-	connectionRequester *server.ConnectionRequester,
+	connectionRequester *ConnectionRequester,
 ) {
 	// Start the client keep alive handler
 	maxTimeout := GetMaxKeepAliveTimeout(keepAlives)
@@ -59,10 +55,10 @@ type KeepAlive struct {
 	name    string
 	channel chan bool
 	timeout time.Duration
-	f       func(*config.SpannerConfig, *KeepAlive, *server.ConnectionRequester)
+	f       func(*SpannerConfig, *KeepAlive, *ConnectionRequester)
 }
 
-func NewKeepAlive(name string, f func(*config.SpannerConfig, *KeepAlive, *server.ConnectionRequester), timeout time.Duration) *KeepAlive {
+func NewKeepAlive(name string, f func(*SpannerConfig, *KeepAlive, *ConnectionRequester), timeout time.Duration) *KeepAlive {
 	return &KeepAlive{
 		name:    name,
 		channel: make(chan bool, 10),
@@ -71,15 +67,13 @@ func NewKeepAlive(name string, f func(*config.SpannerConfig, *KeepAlive, *server
 	}
 }
 
-func (k *KeepAlive) expect(config *config.SpannerConfig, connectionRequester *server.ConnectionRequester) {
+func (k *KeepAlive) expect(config *SpannerConfig, connectionRequester *ConnectionRequester) {
 	time.Sleep(k.timeout)
 	slog.Debug("Check for liveness", "Component", k.name)
 	select {
 	case <-k.channel:
 		slog.Debug("Component Channel has messages", "Count", len(k.channel))
-		if len(k.channel) > 0 {
-			utils.ClearChannel(k.channel)
-		}
+		k.Clear()
 		slog.Debug("Component Channel has messages after clearing", "Count", len(k.channel))
 	default:
 		slog.Warn(fmt.Sprintf("Component: %s is not alive. Restarting...", k.name))
@@ -103,6 +97,6 @@ func (k *KeepAlive) Clear() {
 	slog.Debug("Queue after clearing", "Count", len(k.channel), "Component", k.name)
 }
 
-func (k *KeepAlive) restart(config *config.SpannerConfig, connectionReqester *server.ConnectionRequester) {
+func (k *KeepAlive) restart(config *SpannerConfig, connectionReqester *ConnectionRequester) {
 	k.f(config, k, connectionReqester)
 }

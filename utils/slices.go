@@ -8,6 +8,9 @@ func Pop[T any](slice []T) ([]T, *T) {
 }
 
 func DeleteFromUnsorted[T comparable](slice []T, item T) []T {
+	if len(slice) == 0 {
+		return slice
+	}
 	var index int
 	for i, v := range slice {
 		if v == item {

@@ -1,4 +1,4 @@
-package server
+package main
 
 import (
 	"fmt"
@@ -6,7 +6,6 @@ import (
 	"slices"
 	"time"
 
-	"github.com/livinlefevreloca/pgspanner/config"
 	"github.com/livinlefevreloca/pgspanner/utils"
 )
 
@@ -16,13 +15,13 @@ const (
 
 type Pooler struct {
 	connections    []*ServerConnection
-	clusterConfig  *config.ClusterConfig
-	databaseConfig *config.DatabaseConfig
+	clusterConfig  *ClusterConfig
+	databaseConfig *DatabaseConfig
 }
 
 func newPooler(
-	databaseConfig *config.DatabaseConfig,
-	clusterConfig *config.ClusterConfig,
+	databaseConfig *DatabaseConfig,
+	clusterConfig *ClusterConfig,
 ) *Pooler {
 	conections := make([]*ServerConnection, 0, databaseConfig.PoolSettings.MaxOpenConns)
 	return &Pooler{
@@ -32,7 +31,7 @@ func newPooler(
 	}
 }
 
-func (p *Pooler) getPoolSettings() *config.PoolConfig {
+func (p *Pooler) getPoolSettings() *PoolConfig {
 	return &p.databaseConfig.PoolSettings
 }
 
@@ -132,7 +131,7 @@ type PoolerManager struct {
 	connectionTable  map[int][]ServerProcessIdentity
 }
 
-func NewPoolerManager(config *config.SpannerConfig, server *ConnectionRequester) *PoolerManager {
+func NewPoolerManager(config *SpannerConfig, server *ConnectionRequester) *PoolerManager {
 	poolers := make(map[string]map[string]*Pooler)
 	for _, database := range config.Databases {
 		for _, cluster := range database.Clusters {
@@ -185,6 +184,12 @@ func (pm *PoolerManager) CloseConnection(request ConnectionRequest) {
 		)
 		return
 	}
+	if pm.connectionTable == nil {
+		pm.connectionTable = make(map[int][]ServerProcessIdentity)
+	}
+	if pm.connectionTable[request.FrontendPid] == nil {
+		pm.connectionTable[request.FrontendPid] = make([]ServerProcessIdentity, 0)
+	}
 	pm.connectionTable[request.FrontendPid] = utils.DeleteFromUnsorted[ServerProcessIdentity](
 		pm.connectionTable[request.FrontendPid],
 		request.Connection.GetServerIdentity(),
@@ -201,6 +206,12 @@ func (pm *PoolerManager) ReturnConnection(request ConnectionRequest) {
 			"database", request.database,
 		)
 		return
+	}
+	if pm.connectionTable == nil {
+		pm.connectionTable = make(map[int][]ServerProcessIdentity)
+	}
+	if pm.connectionTable[request.FrontendPid] == nil {
+		pm.connectionTable[request.FrontendPid] = make([]ServerProcessIdentity, 0)
 	}
 	pm.connectionTable[request.FrontendPid] = utils.DeleteFromUnsorted[ServerProcessIdentity](
 		pm.connectionTable[request.FrontendPid],
@@ -239,4 +250,29 @@ func (pm *PoolerManager) SendConnectionMapping(request ConnectionRequest) {
 		ConnMapping: serverIdentities,
 	}
 	request.responder <- response
+}
+
+func RunPoolManager(config *SpannerConfig, keepAlive *KeepAlive, connectionReqester *ConnectionRequester) {
+	// Start the pool manager
+	poolManager := NewPoolerManager(config, connectionReqester)
+	timeout := time.After(CONNECTION_SWEEP_INTERVAL)
+	for {
+		select {
+		case request := <-connectionReqester.ReceiveConnectionRequest():
+			slog.Info("Received connection request", "action", request.Event)
+			switch request.Event {
+			case ACTION_GET_CONNECTION:
+				poolManager.SendConnection(*request)
+			case ACTION_RETURN_CONNECTION:
+				poolManager.ReturnConnection(*request)
+			case ACTION_CLOSE_CONNECTION:
+				poolManager.CloseConnection(*request)
+			case ACTION_GET_CONNECTION_MAPPING:
+				poolManager.SendConnectionMapping(*request)
+			}
+		case <-timeout:
+			keepAlive.Notify()
+			timeout = time.After(CONNECTION_SWEEP_INTERVAL)
+		}
+	}
 }

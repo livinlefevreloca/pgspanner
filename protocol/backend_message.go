@@ -1,7 +1,7 @@
 package protocol
 
 import (
-	"github.com/livinlefevreloca/pgspanner/utils"
+	"github.com/livinlefevreloca/pgspanner/protocol/parsing"
 )
 
 /// An implementation of the Postgres protocol messages that are sent by the server to the client
@@ -43,9 +43,9 @@ func (m *AuthenticationOkPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_AUTH))
-	idx = utils.WriteInt32(out, 1, messageLength)
-	utils.WriteInt32(out, idx, 0)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = parsing.WriteInt32(out, 1, messageLength)
+	parsing.WriteInt32(out, idx, 0)
 
 	return out
 }
@@ -62,8 +62,8 @@ func BuildAuthenticationMD5PasswordPgMessage(salt []byte) *AuthenticationMD5Pass
 // Postgres Message interface implementation for AuthenticationMD5PasswordPgMessage
 func (m *AuthenticationMD5PasswordPgMessage) Unpack(message *RawPgMessage) (*AuthenticationMD5PasswordPgMessage, error) {
 	idx := 0
-	idx, m.inidicator = utils.ParseInt32(message.Data, idx)
-	idx, m.Salt = utils.ParseBytes(message.Data, idx, 4)
+	idx, m.inidicator = parsing.ParseInt32(message.Data, idx)
+	idx, m.Salt = parsing.ParseBytes(message.Data, idx, 4)
 
 	return m, nil
 }
@@ -73,10 +73,10 @@ func (m *AuthenticationMD5PasswordPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_AUTH))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteInt32(out, idx, m.inidicator)
-	utils.WriteBytes(out, idx, m.Salt)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, m.inidicator)
+	parsing.WriteBytes(out, idx, m.Salt)
 
 	return out
 }
@@ -107,7 +107,7 @@ func BuildRowDescriptionPgMessage(fieldsMap map[string][]int) *RowDescriptionPgM
 // PostgresMessage interface implementation for RowDescriptionPgMessage
 func (m *RowDescriptionPgMessage) Unpack(message *RawPgMessage) (*RowDescriptionPgMessage, error) {
 	idx := 0
-	idx, fieldCount := utils.ParseInt16(message.Data, idx)
+	idx, fieldCount := parsing.ParseInt16(message.Data, idx)
 
 	fields := make([]FieldDescription, fieldCount)
 	for i := 0; i < fieldCount; i++ {
@@ -134,14 +134,14 @@ func (m RowDescriptionPgMessage) Pack() []byte {
 
 	idx := 0
 	// Write the kind of message
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_ROW_DESCRIPTION))
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_ROW_DESCRIPTION))
 	// Write the length of the message
-	idx = utils.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, messageLength)
 	// Write the number of fields
-	idx = utils.WriteInt16(out, idx, len(m.Fields))
+	idx = parsing.WriteInt16(out, idx, len(m.Fields))
 	for _, field := range m.Fields {
 		fieldBytes := field.Pack()
-		idx = utils.WriteBytes(out, idx, fieldBytes)
+		idx = parsing.WriteBytes(out, idx, fieldBytes)
 	}
 
 	return out
@@ -161,17 +161,17 @@ type FieldDescription struct {
 func parseFieldDescription(data []byte) (int, *FieldDescription, error) {
 	idx := 0
 
-	idx, name, err := utils.ParseCString(data, idx)
+	idx, name, err := parsing.ParseCString(data, idx)
 	if err != nil {
 		return idx, nil, err
 	}
 
-	idx, tableOid := utils.ParseInt32(data, idx)
-	idx, columnOid := utils.ParseInt16(data, idx)
-	idx, typeOid := utils.ParseInt32(data, idx)
-	idx, typeSize := utils.ParseInt16(data, idx)
-	idx, typeModifier := utils.ParseInt32(data, idx)
-	idx, format := utils.ParseInt16(data, idx)
+	idx, tableOid := parsing.ParseInt32(data, idx)
+	idx, columnOid := parsing.ParseInt16(data, idx)
+	idx, typeOid := parsing.ParseInt32(data, idx)
+	idx, typeSize := parsing.ParseInt16(data, idx)
+	idx, typeModifier := parsing.ParseInt32(data, idx)
+	idx, format := parsing.ParseInt16(data, idx)
 
 	field := FieldDescription{
 		Name:         name,
@@ -226,11 +226,11 @@ func (m *DataRowPgMessage) getByteLength() int {
 // PostgresMessage interface implementation for DataRowPgMessage
 func (m *DataRowPgMessage) Unpack(message *RawPgMessage) (*DataRowPgMessage, error) {
 	idx := 0
-	idx, rowCount := utils.ParseInt16(message.Data, idx)
+	idx, rowCount := parsing.ParseInt16(message.Data, idx)
 	values := make([][]byte, rowCount)
 	for i := 0; i < rowCount; i++ {
-		idx, valueLength := utils.ParseInt32(message.Data, idx)
-		idx, value := utils.ParseBytes(message.Data, idx, valueLength)
+		idx, valueLength := parsing.ParseInt32(message.Data, idx)
+		idx, value := parsing.ParseBytes(message.Data, idx, valueLength)
 		values[i] = value
 	}
 
@@ -242,12 +242,12 @@ func (m *DataRowPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)       // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_DATA_ROW))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteInt16(out, idx, len(m.Values))
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_DATA_ROW))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt16(out, idx, len(m.Values))
 	for _, value := range m.Values {
-		idx = utils.WriteInt32(out, idx, len(value))
-		idx = utils.WriteBytes(out, idx, value)
+		idx = parsing.WriteInt32(out, idx, len(value))
+		idx = parsing.WriteBytes(out, idx, value)
 	}
 
 	return out
@@ -265,19 +265,19 @@ func (d FieldDescription) Pack() []byte {
 
 	idx := 0
 	// Write the name of the field
-	idx = utils.WriteCString(out, idx, d.Name)
+	idx = parsing.WriteCString(out, idx, d.Name)
 	// Write the table oid
-	idx = utils.WriteInt32(out, idx, d.tableOid)
+	idx = parsing.WriteInt32(out, idx, d.tableOid)
 	// Write the column oid
-	idx = utils.WriteInt16(out, idx, d.columnOid)
+	idx = parsing.WriteInt16(out, idx, d.columnOid)
 	// Write the type oid
-	idx = utils.WriteInt32(out, idx, d.typeOid)
+	idx = parsing.WriteInt32(out, idx, d.typeOid)
 	// Write the type size
-	idx = utils.WriteInt16(out, idx, d.typeSize)
+	idx = parsing.WriteInt16(out, idx, d.typeSize)
 	// Write the type modifier
-	idx = utils.WriteInt32(out, idx, d.typeModifier)
+	idx = parsing.WriteInt32(out, idx, d.typeModifier)
 	// Write the format
-	utils.WriteInt16(out, idx, d.format)
+	parsing.WriteInt16(out, idx, d.format)
 
 	return out
 }
@@ -299,11 +299,11 @@ func (m *ParameterStatusPgMessage) getByteLength() int {
 // Postgres Message interface implementation for ParameterStatusPgMessage
 func (m *ParameterStatusPgMessage) Unpack(message *RawPgMessage) (*ParameterStatusPgMessage, error) {
 	idx := 0
-	idx, name, err := utils.ParseCString(message.Data, idx)
+	idx, name, err := parsing.ParseCString(message.Data, idx)
 	if err != nil {
 		return nil, err
 	}
-	idx, value, err := utils.ParseCString(message.Data, idx)
+	idx, value, err := parsing.ParseCString(message.Data, idx)
 	if err != nil {
 		return nil, err
 	}
@@ -316,10 +316,10 @@ func (m *ParameterStatusPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)   // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_PARAMETER_STATUS))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteCString(out, idx, m.Name)
-	utils.WriteCString(out, idx, m.Value)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_PARAMETER_STATUS))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteCString(out, idx, m.Name)
+	parsing.WriteCString(out, idx, m.Value)
 
 	return out
 }
@@ -337,8 +337,8 @@ func BuildBackendKeyDataPgMessage(processID int, secretKey int) *BackendKeyDataP
 // Postgres Message interface implementation for BackendKeyDataPgMessage
 func (m *BackendKeyDataPgMessage) Unpack(message *RawPgMessage) (*BackendKeyDataPgMessage, error) {
 	idx := 0
-	idx, Pid := utils.ParseInt32(message.Data, idx)
-	idx, secretKey := utils.ParseInt32(message.Data, idx)
+	idx, Pid := parsing.ParseInt32(message.Data, idx)
+	idx, secretKey := parsing.ParseInt32(message.Data, idx)
 
 	return &BackendKeyDataPgMessage{Pid, secretKey}, nil
 }
@@ -348,10 +348,10 @@ func (m *BackendKeyDataPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1) // +1 for the kind of message (1 byte
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_BACKEND_KEY_DATA))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	idx = utils.WriteInt32(out, idx, m.Pid)
-	utils.WriteInt32(out, idx, m.SecretKey)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_BACKEND_KEY_DATA))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, m.Pid)
+	parsing.WriteInt32(out, idx, m.SecretKey)
 
 	return out
 }
@@ -375,9 +375,9 @@ func (m *ReadyForQueryPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_READY_FOR_QUERY))
-	idx = utils.WriteInt32(out, 1, messageLength)
-	utils.WriteByte(out, idx, m.TransactionStatus)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_READY_FOR_QUERY))
+	idx = parsing.WriteInt32(out, 1, messageLength)
+	parsing.WriteByte(out, idx, m.TransactionStatus)
 
 	return out
 }
@@ -399,8 +399,8 @@ func (m *NoDataPgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1) // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_NO_DATA))
-	utils.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_NO_DATA))
+	parsing.WriteInt32(out, idx, messageLength)
 
 	return out
 }
@@ -424,9 +424,9 @@ func (m *CommandCompletePgMessage) Pack() []byte {
 	out := make([]byte, messageLength+1)    // +1 for the kind of message
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte('C'))
-	idx = utils.WriteInt32(out, idx, messageLength)
-	utils.WriteCString(out, idx, m.Command)
+	idx = parsing.WriteByte(out, idx, byte('C'))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	parsing.WriteCString(out, idx, m.Command)
 
 	return out
 }
@@ -462,7 +462,7 @@ func (m *ErrorResponsePgMessage) Unpack(message *RawPgMessage) (*ErrorResponsePg
 
 	for idx < len(message.Data) {
 		typ := message.Data[idx]
-		idx, value, err = utils.ParseCString(message.Data, idx)
+		idx, value, err = parsing.ParseCString(message.Data, idx)
 		if err != nil {
 			return nil, err
 		}
@@ -477,22 +477,22 @@ func (m *ErrorResponsePgMessage) Pack() []byte {
 	messageLength := 4        // kind + length
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, byte(BMESSAGE_ERROR_RESPONSE))
-	idx = utils.WriteInt32(out, idx, -1) // Placeholder for the length
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_ERROR_RESPONSE))
+	idx = parsing.WriteInt32(out, idx, -1) // Placeholder for the length
 	for _, field := range m.Fields {
 		fieldBytes := field.Pack()
-		idx, out = utils.WriteBytesSafe(out, idx, fieldBytes)
+		idx, out = parsing.WriteBytesSafe(out, idx, fieldBytes)
 		messageLength += len(fieldBytes)
 	}
 	// Additional null terminator
-	idx, out = utils.WriteBytesSafe(out, idx, []byte{0})
+	idx, out = parsing.WriteBytesSafe(out, idx, []byte{0})
 	messageLength += 1
 
 	// Write the length of the message. We use the non safe
 	// version of WriteInt32 because we know the that
 	// the index we are writing to is within the bounds of
 	// the slice
-	utils.WriteInt32(out, 1, messageLength)
+	parsing.WriteInt32(out, 1, messageLength)
 
 	return out[:idx]
 }
@@ -510,8 +510,8 @@ func (e ErrorField) Pack() []byte {
 	out := make([]byte, 1+len(e.Value)+1) // 1 byte + value + null terminator
 
 	idx := 0
-	idx = utils.WriteByte(out, idx, e.Type)
-	idx = utils.WriteCString(out, idx, e.Value)
+	idx = parsing.WriteByte(out, idx, e.Type)
+	idx = parsing.WriteCString(out, idx, e.Value)
 
 	return out
 }
