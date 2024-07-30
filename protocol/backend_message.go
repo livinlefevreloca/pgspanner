@@ -21,8 +21,11 @@ const (
 )
 
 const (
-	AUTH_OK           = 0
-	AUTH_MD5_PASSWORD = 5
+	AUTH_OK            = 0
+	AUTH_MD5_PASSWORD  = 5
+	AUTH_SASL          = 10
+	AUTH_SASL_CONTINUE = 11
+	AUTH_SASL_FINAL    = 12
 )
 
 // AuthenticationOkPgMessage represents the message sent by the server to indicate that the authentication was successful
@@ -61,9 +64,14 @@ func BuildAuthenticationMD5PasswordPgMessage(salt []byte) *AuthenticationMD5Pass
 
 // Postgres Message interface implementation for AuthenticationMD5PasswordPgMessage
 func (m *AuthenticationMD5PasswordPgMessage) Unpack(message *RawPgMessage) (*AuthenticationMD5PasswordPgMessage, error) {
+	var err error
+
 	idx := 0
 	idx, m.inidicator = parsing.ParseInt32(message.Data, idx)
-	idx, m.Salt = parsing.ParseBytes(message.Data, idx, 4)
+	idx, m.Salt, err = parsing.ParseBytes(message.Data, idx, 4)
+	if err != nil {
+		return nil, err
+	}
 
 	return m, nil
 }
@@ -77,6 +85,127 @@ func (m *AuthenticationMD5PasswordPgMessage) Pack() []byte {
 	idx = parsing.WriteInt32(out, idx, messageLength)
 	idx = parsing.WriteInt32(out, idx, m.inidicator)
 	parsing.WriteBytes(out, idx, m.Salt)
+
+	return out
+}
+
+// AuthenticationSASLPgMessage represents the message sent by the server to indicate that the client should use SASL authentication
+type AuthenticationSASLPgMessage struct {
+	AuthMechanisms []string
+}
+
+func BuildAuthenticationSASLPgMessage(authMechanisms []string) *AuthenticationSASLPgMessage {
+	return &AuthenticationSASLPgMessage{authMechanisms}
+}
+
+// Postgres Message interface implementation for AuthenticationSASLPgMessage
+func (m *AuthenticationSASLPgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLPgMessage, error) {
+	var err error
+	var mechanism string
+	idx := 0
+	idx += 4 // Skip the auth indicator
+
+	// In most cases the server will return 2 mechanisms
+	// * SCRAM-SHA-256
+	// * SCRAM-SHA-256-PLUS
+	authMechanisms := make([]string, 2)
+	for idx < len(message.Data) {
+		idx, mechanism, err = parsing.ParseCString(message.Data, idx)
+		if err != nil {
+			return nil, err
+		}
+		authMechanisms = append(authMechanisms, mechanism)
+	}
+
+	m.AuthMechanisms = authMechanisms
+
+	return m, nil
+}
+
+func (m *AuthenticationSASLPgMessage) Pack() []byte {
+	messageLength := 4 + 4 // length + indicator
+	for _, mechanism := range m.AuthMechanisms {
+		messageLength += len(mechanism) + 1 // mechanism + null terminator
+	}
+	messageLength += 1 // message null terminator
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, AUTH_SASL)
+	for _, mechanism := range m.AuthMechanisms {
+		idx = parsing.WriteCString(out, idx, mechanism)
+	}
+	parsing.WriteByte(out, idx, 0)
+
+	return out
+}
+
+// AuthenticationSASLContinuePgMessage represents the message sent by the server to continue the SASL authentication process
+type AuthenticationSASLContinuePgMessage struct {
+	Data []byte
+}
+
+func BuildAuthenticationSASLContinuePgMessage(data []byte) *AuthenticationSASLContinuePgMessage {
+	return &AuthenticationSASLContinuePgMessage{data}
+}
+
+// Postgres Message interface implementation for AuthenticationSASLContinuePgMessage
+func (m *AuthenticationSASLContinuePgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLContinuePgMessage, error) {
+	idx := 0
+	idx += 4 // Skip the auth indicator
+	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data))
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthenticationSASLContinuePgMessage{data}, nil
+}
+
+func (m *AuthenticationSASLContinuePgMessage) Pack() []byte {
+	messageLength := 4 + 4 + len(m.Data) // length + indicator + data
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, AUTH_SASL_CONTINUE)
+	parsing.WriteBytes(out, idx, m.Data)
+
+	return out
+}
+
+// AuthenticationSASLFinalPgMessage represents the message sent by the server to indicate that the SASL authentication process is complete
+type AuthenticationSASLFinalPgMessage struct {
+	Data []byte
+}
+
+func BuildAuthenticationSASLFinalPgMessage(data []byte) *AuthenticationSASLFinalPgMessage {
+	return &AuthenticationSASLFinalPgMessage{data}
+}
+
+// Postgres Message interface implementation for AuthenticationSASLFinalPgMessage
+func (m *AuthenticationSASLFinalPgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLFinalPgMessage, error) {
+	idx := 0
+	idx += 4 // Skip the auth indicator
+	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data))
+	if err != nil {
+		return nil, err
+	}
+
+	return &AuthenticationSASLFinalPgMessage{data}, nil
+}
+
+func (m *AuthenticationSASLFinalPgMessage) Pack() []byte {
+	messageLength := 4 + 4 + len(m.Data) // length + indicator + data
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = parsing.WriteByte(out, idx, byte(BMESSAGE_AUTH))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteInt32(out, idx, AUTH_SASL_FINAL)
+	parsing.WriteBytes(out, idx, m.Data)
 
 	return out
 }
@@ -230,7 +359,10 @@ func (m *DataRowPgMessage) Unpack(message *RawPgMessage) (*DataRowPgMessage, err
 	values := make([][]byte, rowCount)
 	for i := 0; i < rowCount; i++ {
 		idx, valueLength := parsing.ParseInt32(message.Data, idx)
-		idx, value := parsing.ParseBytes(message.Data, idx, valueLength)
+		idx, value, err := parsing.ParseBytes(message.Data, idx, valueLength)
+		if err != nil {
+			return nil, err
+		}
 		values[i] = value
 	}
 

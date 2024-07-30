@@ -16,6 +16,7 @@ const (
 	FMESSAGE_TERMINATE = 88
 	FMESSAGE_PASSWORD  = 112
 	FMESSAGE_CANCEL    = -2
+	FMESSAGE_SASL      = 112
 )
 
 const (
@@ -194,4 +195,79 @@ func (m *CancelRequestPgMessage) Unpack(message *RawPgMessage) (*CancelRequestPg
 	idx, secretKey := parsing.ParseInt32(message.Data, idx)
 
 	return &CancelRequestPgMessage{processID, secretKey}, nil
+}
+
+// SASLInitialResponsePgMessage represents the message sent by the client to authenticate using SASL
+type SASLInitialResponsePgMessage struct {
+	Mechanism string
+	Response  []byte
+}
+
+func BuildSASLInitialResponseMessage(mechanism string, response []byte) *SASLInitialResponsePgMessage {
+	return &SASLInitialResponsePgMessage{mechanism, response}
+}
+
+// PgMessage interface implementation for SASLInitialResponsePgMessage
+func (m *SASLInitialResponsePgMessage) Unpack(message *RawPgMessage) (*SASLInitialResponsePgMessage, error) {
+	idx := 0
+	idx, mechanism, err := parsing.ParseCString(message.Data, idx)
+	if err != nil {
+		return nil, err
+	}
+	idx, length := parsing.ParseInt32(message.Data, idx)
+	idx, response, err := parsing.ParseBytes(message.Data, idx, int(length))
+	if err != nil {
+		return nil, err
+	}
+
+	return &SASLInitialResponsePgMessage{mechanism, response}, nil
+}
+
+func (m SASLInitialResponsePgMessage) Pack() []byte {
+	messageLength := 4 + len(m.Mechanism) + 4 + len(m.Response) // length + mechanism + null terminator + response
+
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = parsing.WriteByte(out, idx, byte(FMESSAGE_SASL))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	idx = parsing.WriteCString(out, idx, m.Mechanism)
+	idx = parsing.WriteInt32(out, idx, len(m.Response))
+	parsing.WriteBytes(out, idx, m.Response)
+
+	return out
+}
+
+// SASLResponsePgMessage represents the message sent by the client to authenticate using SASL
+type SASLResponsePgMessage struct {
+	Response []byte
+}
+
+func BuildSASLResponseMessage(response []byte) *SASLResponsePgMessage {
+	return &SASLResponsePgMessage{response}
+}
+
+// PgMessage interface implementation for SASLResponsePgMessage
+func (m *SASLResponsePgMessage) Unpack(message *RawPgMessage) (*SASLResponsePgMessage, error) {
+	idx := 0
+	idx, length := parsing.ParseInt32(message.Data, idx)
+	idx, response, err := parsing.ParseBytes(message.Data, idx, int(length))
+	if err != nil {
+		return nil, err
+	}
+
+	return &SASLResponsePgMessage{response}, nil
+}
+
+func (m SASLResponsePgMessage) Pack() []byte {
+	messageLength := 4 + len(m.Response) // length + response
+
+	out := make([]byte, messageLength+1)
+
+	idx := 0
+	idx = parsing.WriteByte(out, idx, byte(FMESSAGE_SASL))
+	idx = parsing.WriteInt32(out, idx, messageLength)
+	parsing.WriteBytes(out, idx, m.Response)
+
+	return out
 }

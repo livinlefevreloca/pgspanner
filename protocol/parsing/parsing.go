@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 )
 
@@ -34,8 +35,13 @@ func ParseCString(data []byte, idx int) (int, string, error) {
 	return idx + i + 1, string(data[idx : idx+i]), nil
 }
 
-func ParseBytes(data []byte, idx int, length int) (int, []byte) {
-	return idx + length, data[idx : idx+length]
+func ParseBytes(data []byte, idx int, length int) (int, []byte, error) {
+	if idx+length > len(data) {
+		return idx, nil, errors.New(
+			fmt.Sprintf("Byte slice was not of expected length. Expected %d, got %d", idx+length, len(data)),
+		)
+	}
+	return idx + length, data[idx : idx+length], nil
 }
 
 // Functions to write to a byte slice
