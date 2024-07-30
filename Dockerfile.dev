@@ -1,0 +1,12 @@
+FROM golang:1.21
+
+RUN mkdir -p /go/src/github.com/livinlefevreloca/pgspanner && mkdir -p /etc/pgspanner && mkdir -p /root/work
+
+COPY . /go/src/github.com/livinlefevreloca/pgspanner
+
+RUN cd /go/src/github.com/livinlefevreloca/pgspanner && go build -o /go/bin/pgspanner
+
+COPY config.toml /etc/pgspanner/config.toml
+
+WORKDIR /root/work
+CMD ["/go/bin/pgspanner", "--config", "/etc/pgspanner/config.toml"]

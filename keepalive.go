@@ -6,21 +6,38 @@ import (
 	"time"
 )
 
+func runWithRecovery(componentName string, f func()) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Component paniced, but recovery was posible", "Error", r, "Component", componentName)
+		}
+	}()
+	f()
+}
+
 func StartComponentWithKeepAlive(
 	name string,
 	component func(config *SpannerConfig, keepAlive *KeepAlive, connectionReqester *ConnectionRequester),
 	timeout time.Duration,
 	config *SpannerConfig,
 	connectionReqester *ConnectionRequester,
+	disabled bool,
 ) *KeepAlive {
 	keepAlive := NewKeepAlive(
 		name,
 		component,
 		timeout,
+		disabled,
 	)
+	if disabled {
+		return keepAlive
+	}
 
 	slog.Info("Starting component with KeepAlive", "Name", name)
-	go component(config, keepAlive, connectionReqester)
+
+	go runWithRecovery(name, func() {
+		component(config, keepAlive, connectionReqester)
+	})
 
 	return keepAlive
 }
@@ -52,18 +69,20 @@ func GetMaxKeepAliveTimeout(keepAlives []*KeepAlive) time.Duration {
 }
 
 type KeepAlive struct {
-	name    string
-	channel chan bool
-	timeout time.Duration
-	f       func(*SpannerConfig, *KeepAlive, *ConnectionRequester)
+	name     string
+	channel  chan bool
+	timeout  time.Duration
+	f        func(*SpannerConfig, *KeepAlive, *ConnectionRequester)
+	disabled bool
 }
 
-func NewKeepAlive(name string, f func(*SpannerConfig, *KeepAlive, *ConnectionRequester), timeout time.Duration) *KeepAlive {
+func NewKeepAlive(name string, f func(*SpannerConfig, *KeepAlive, *ConnectionRequester), timeout time.Duration, disabled bool) *KeepAlive {
 	return &KeepAlive{
-		name:    name,
-		channel: make(chan bool, 10),
-		timeout: timeout,
-		f:       f,
+		name:     name,
+		channel:  make(chan bool, 10),
+		timeout:  timeout,
+		f:        f,
+		disabled: disabled,
 	}
 }
 
@@ -82,6 +101,9 @@ func (k *KeepAlive) expect(config *SpannerConfig, connectionRequester *Connectio
 }
 
 func (k *KeepAlive) Notify() {
+	if k.disabled {
+		return
+	}
 	slog.Debug("Queue before notifying", "Count", len(k.channel), "Component", k.name)
 	k.Clear()
 	k.channel <- true
@@ -98,5 +120,7 @@ func (k *KeepAlive) Clear() {
 }
 
 func (k *KeepAlive) restart(config *SpannerConfig, connectionReqester *ConnectionRequester) {
-	k.f(config, k, connectionReqester)
+	runWithRecovery(k.name, func() {
+		k.f(config, k, connectionReqester)
+	})
 }

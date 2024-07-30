@@ -1,0 +1,70 @@
+version: '2.27'
+services:
+    pgspanner:
+        container_name: pgspanner
+        image: pgspanner
+        ports:
+          - "8000:8000"
+        environment:
+          - PG_PASSWORD_1=postgres
+          - PG_PASSWORD_2=postgres
+          - PG_PASSWORD_3=postgres
+        volumes:
+          - ./build:/go/bin/
+    postgres1:
+        hostname: postgres1
+        image: postgres:16.3
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_PASSWORD=postgres
+        ports:
+            - "5432:5432"
+        shm_size: 1gb
+        volumes:
+            - postgres_data1:/var/lib/postgresql/data
+            - ./postgres/1:/docker-entrypoint-initdb.d/
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready"]
+          interval: 5s
+          timeout: 5s
+          retries: 10
+    postgres2:
+        hostname: postgres2
+        image: postgres:16.3
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_PASSWORD=postgres
+        ports:
+            - "5433:5432"
+        shm_size: 1gb
+        volumes:
+            - postgres_data2:/var/lib/postgresql/data
+            - ./postgres/2:/docker-entrypoint-initdb.d/
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready"]
+          interval: 5s
+          timeout: 5s
+          retries: 10
+    postgres3:
+        hostname: postgres3
+        image: postgres:16.3
+        environment:
+            - POSTGRES_USER=postgres
+            - POSTGRES_PASSWORD=postgres
+        ports:
+            - "5434:5432"
+        shm_size: 1gb
+        volumes:
+            - postgres_data3:/var/lib/postgresql/data
+            - ./postgres/3:/docker-entrypoint-initdb.d/
+        healthcheck:
+          test: ["CMD-SHELL", "pg_isready"]
+          interval: 5s
+          timeout: 5s
+          retries: 10
+
+
+volumes:
+    postgres_data1:
+    postgres_data2:
+    postgres_data3:

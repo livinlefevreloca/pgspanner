@@ -1,20 +1,33 @@
-logLevel = "Debug"
 ListenPort = 8000
-ListenAddr = "localhost"
+ListenAddr = "0.0.0.0"
 
-# Database Configuration for "lyfe"
+# Database Configuration for "test"
 [[databases]]
-name = "lyfe"
+name = "test"
 ssl = false
 shouldPool = false
 authMethod = "md5"
 
 [[databases.clusters]]
-name = "lyfe"
-host = "localhost"
+name = "postgres"
+host = "postgres1"
 port = 5432
 user = "postgres"
-passwordEnv = "PG_PASSWORD"
+passwordEnv = "PG_PASSWORD_1"
+
+[[databases.clusters]]
+name = "postgres"
+host = "postgres2"
+port = 5433
+user = "postgres"
+passwordEnv = "PG_PASSWORD_2"
+
+[[databases.clusters]]
+name = "postgres"
+host = "postgres3"
+port = 5434
+user = "postgres"
+passwordEnv = "PG_PASSWORD_3"
 
 [databases.poolSettings]
 maxOpenConns = 10

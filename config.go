@@ -53,18 +53,30 @@ func (d *DatabaseConfig) display() string {
 	return confStr
 }
 
-func (d *DatabaseConfig) GetClusterConfigByHostPort(host string, port int) (*ClusterConfig, bool) {
+func (d *DatabaseConfig) GetClusterConfigByHostPort(addr string) (*ClusterConfig, bool) {
 	for _, c := range d.Clusters {
-		if c.Host == host && c.Port == port {
+		if c.GetAddr() == addr {
 			return &c, true
 		}
 	}
 	return nil, false
 }
 
+type LoggingConfig struct {
+	LogLevel string
+	LogFile  string
+	Json     bool
+}
+
+func (l *LoggingConfig) display() string {
+	return "LogLevel: " + l.LogLevel + " LogFile: " + l.LogFile + " Json: " + fmt.Sprint(l.Json)
+}
+
 type SpannerConfig struct {
 	// Logging Config
-	LogLevel string
+	Logging LoggingConfig
+
+	PidFile string
 
 	// Frontend Config
 	ListenPort int
@@ -85,7 +97,7 @@ func (c *SpannerConfig) GetDatabaseConfigByName(name string) (*DatabaseConfig, b
 
 func (s *SpannerConfig) Display() string {
 	confStr := ""
-	confStr += "LogLevel: " + s.LogLevel + "\n"
+	confStr += s.Logging.display() + "\n"
 	confStr += "ListenAddr: " + s.ListenAddr + "\n"
 	confStr += "ListenPort: " + fmt.Sprint(s.ListenPort) + "\n"
 	confStr += "[[ Databases ]]\n\n"

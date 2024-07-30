@@ -15,7 +15,7 @@ const (
 type ConnectionRequest struct {
 	Event       string
 	database    string
-	cluster     string
+	clusterAddr string
 	FrontendPid int
 	Connection  *ServerConnection
 	responder   chan ConnectionResponse
@@ -35,26 +35,44 @@ type ConnectionRequester struct {
 
 func NewConnectionRequester() *ConnectionRequester {
 	// Use a buffered channel to avoid blocking the requester
-	return &ConnectionRequester{channel: make(chan *ConnectionRequest, 2)}
+	return &ConnectionRequester{channel: make(chan *ConnectionRequest, 1024)}
 }
 
 func (cr *ConnectionRequester) ReceiveConnectionRequest() chan *ConnectionRequest {
 	return cr.channel
 }
 
-func (cr *ConnectionRequester) RequestConnection(database string, cluster string, clientPid int) ConnectionResponse {
+func (cr *ConnectionRequester) RequestConnection(database string, clusterAddr string, clientPid int) ConnectionResponse {
 	response := make(chan ConnectionResponse)
-	request := ConnectionRequest{Event: ACTION_GET_CONNECTION, database: database, cluster: cluster, responder: response, FrontendPid: clientPid}
+	request := ConnectionRequest{
+		Event:       ACTION_GET_CONNECTION,
+		database:    database,
+		clusterAddr: clusterAddr,
+		responder:   response,
+		FrontendPid: clientPid,
+	}
 	cr.channel <- &request
 	return <-response
 }
 
-func (cr *ConnectionRequester) ReturnConnection(conn *ServerConnection, database string, cluster string, clientPid int) {
+func (cr *ConnectionRequester) ReturnConnection(conn *ServerConnection, database string, clusterAddr string, clientPid int) {
 	var request ConnectionRequest
 	if conn.IsPoisoned() {
-		request = ConnectionRequest{Event: ACTION_CLOSE_CONNECTION, Connection: conn, database: database, cluster: cluster, FrontendPid: clientPid}
+		request = ConnectionRequest{
+			Event:       ACTION_CLOSE_CONNECTION,
+			Connection:  conn,
+			database:    database,
+			clusterAddr: clusterAddr,
+			FrontendPid: clientPid,
+		}
 	} else {
-		request = ConnectionRequest{Event: ACTION_RETURN_CONNECTION, Connection: conn, database: database, cluster: cluster, FrontendPid: clientPid}
+		request = ConnectionRequest{
+			Event:       ACTION_RETURN_CONNECTION,
+			Connection:  conn,
+			database:    database,
+			clusterAddr: clusterAddr,
+			FrontendPid: clientPid,
+		}
 	}
 	cr.channel <- &request
 }

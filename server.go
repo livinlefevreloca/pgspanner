@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
 	"time"
@@ -14,6 +15,10 @@ type ServerProcessIdentity struct {
 	DatabaseName string
 	ClusterHost  string
 	ClusterPort  int
+}
+
+func (s *ServerProcessIdentity) GetAddr() string {
+	return fmt.Sprintf("%s:%d", s.ClusterHost, s.ClusterPort)
 }
 
 type serverConnectionContext struct {

@@ -20,14 +20,14 @@ type Pooler struct {
 }
 
 func newPooler(
-	databaseConfig *DatabaseConfig,
-	clusterConfig *ClusterConfig,
+	databaseConfig DatabaseConfig,
+	clusterConfig ClusterConfig,
 ) *Pooler {
 	conections := make([]*ServerConnection, 0, databaseConfig.PoolSettings.MaxOpenConns)
 	return &Pooler{
 		connections:    conections,
-		databaseConfig: databaseConfig,
-		clusterConfig:  clusterConfig,
+		databaseConfig: &databaseConfig,
+		clusterConfig:  &clusterConfig,
 	}
 }
 
@@ -35,8 +35,8 @@ func (p *Pooler) getPoolSettings() *PoolConfig {
 	return &p.databaseConfig.PoolSettings
 }
 
-func (p *Pooler) getAddr() string {
-	return fmt.Sprintf("%s:%d", p.clusterConfig.Host, p.clusterConfig.Port)
+func (p *Pooler) GetAddr() string {
+	return p.clusterConfig.GetAddr()
 }
 
 func (p *Pooler) removeConnection(connection *ServerConnection) {
@@ -64,7 +64,7 @@ func (p *Pooler) getConnection(frontendPid int) (*ServerConnection, error) {
 			if err != nil {
 				slog.Error(
 					"Error creating connection",
-					"Pooler", p.clusterConfig.Name,
+					"Pooler", p.GetAddr(),
 					"Error", err,
 				)
 				return nil, err
@@ -82,7 +82,7 @@ func (p *Pooler) getConnection(frontendPid int) (*ServerConnection, error) {
 		} else if connection.GetAge() > int64(poolSettings.MaxConnLifetime) {
 			slog.Info(
 				"Closing connection. Connection has exceeded max lifetime",
-				"Pooler", p.getAddr(),
+				"Pooler", p.GetAddr(),
 				"BackendPid", connection.GetBackendPid(),
 			)
 			connection.Close()
@@ -100,21 +100,21 @@ func (p *Pooler) returnConnection(connection ServerConnection, frontendPid int) 
 	if len(p.connections) < poolSettings.MaxOpenConns {
 		slog.Info(
 			"Returning connection",
-			"Pooler", p.getAddr(),
+			"Pooler", p.GetAddr(),
 			"BackendPid", connection.GetBackendPid(),
 		)
 		p.connections = append(p.connections, &connection)
 	} else if connection.GetAge() > int64(poolSettings.MaxConnLifetime) {
 		slog.Info(
 			"Closing connection. Connection has exceeded max lifetime",
-			"Pooler", p.getAddr(),
+			"Pooler", p.GetAddr(),
 			"BackendPid", connection.GetBackendPid(),
 		)
 		connection.Close()
 	} else {
 		slog.Info(
 			"Closing connection. Pool is full",
-			"Pooler", p.getAddr(),
+			"Pooler", p.GetAddr(),
 			"BackendPid", connection.GetBackendPid(),
 		)
 		connection.Close()
@@ -138,7 +138,7 @@ func NewPoolerManager(config *SpannerConfig, server *ConnectionRequester) *Poole
 			if poolers[database.Name] == nil {
 				poolers[database.Name] = make(map[string]*Pooler)
 			}
-			poolers[database.Name][cluster.Name] = newPooler(&database, &cluster)
+			poolers[database.Name][cluster.GetAddr()] = newPooler(database, cluster)
 		}
 	}
 	return &PoolerManager{
@@ -148,8 +148,13 @@ func NewPoolerManager(config *SpannerConfig, server *ConnectionRequester) *Poole
 }
 
 func (pm *PoolerManager) SendConnection(request ConnectionRequest) {
-	pooler := pm.poolers[request.database][request.cluster]
+	pooler := pm.poolers[request.database][request.clusterAddr]
 	var response ConnectionResponse
+	slog.Info(
+		"Received connection request for cluster",
+		"cluster", request.clusterAddr,
+		"database", request.database,
+	)
 	connection, err := pooler.getConnection(request.FrontendPid)
 	if err != nil {
 		response = ConnectionResponse{
@@ -158,11 +163,12 @@ func (pm *PoolerManager) SendConnection(request ConnectionRequest) {
 			Detail: err,
 			Conn:   nil,
 		}
-	} else {
-		response = ConnectionResponse{
-			Event: ACTION_GET_CONNECTION,
-			Conn:  connection,
-		}
+		request.responder <- response
+		return
+	}
+	response = ConnectionResponse{
+		Event: ACTION_GET_CONNECTION,
+		Conn:  connection,
 	}
 	if pm.connectionTable == nil {
 		pm.connectionTable = make(map[int][]ServerProcessIdentity)
@@ -175,11 +181,11 @@ func (pm *PoolerManager) SendConnection(request ConnectionRequest) {
 }
 
 func (pm *PoolerManager) CloseConnection(request ConnectionRequest) {
-	pooler := pm.poolers[request.database][request.cluster]
+	pooler := pm.poolers[request.database][request.clusterAddr]
 	if request.Connection == nil {
 		slog.Error(
 			"Received nil connection in CloseConnection",
-			"cluster", request.cluster,
+			"cluster", request.clusterAddr,
 			"database", request.database,
 		)
 		return
@@ -198,11 +204,11 @@ func (pm *PoolerManager) CloseConnection(request ConnectionRequest) {
 }
 
 func (pm *PoolerManager) ReturnConnection(request ConnectionRequest) {
-	pooler := pm.poolers[request.database][request.cluster]
+	pooler := pm.poolers[request.database][request.clusterAddr]
 	if request.Connection == nil {
 		slog.Error(
 			"Received nil connection in ReturnConnection",
-			"cluster", request.cluster,
+			"cluster", request.clusterAddr,
 			"database", request.database,
 		)
 		return

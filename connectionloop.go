@@ -84,7 +84,7 @@ func handleCancelRequest(
 			slog.Error("Database config not found", "database", serverProcess.DatabaseName)
 			continue
 		}
-		cluster, ok := database.GetClusterConfigByHostPort(serverProcess.ClusterHost, serverProcess.ClusterPort)
+		cluster, ok := database.GetClusterConfigByHostPort(serverProcess.GetAddr())
 		if !ok {
 			slog.Error("Cluster config not found", "cluster", serverProcess.ClusterHost)
 			continue
@@ -118,22 +118,16 @@ func handleCancelRequest(
 func getServerConnection(
 	requester *ConnectionRequester,
 	database *DatabaseConfig,
-	clusterHost string,
-	clusterPort int,
+	clusterAddr string,
 	clientPid int,
 ) (*ServerConnection, error) {
-	cluster, ok := database.GetClusterConfigByHostPort(clusterHost, clusterPort)
-	if !ok {
-		slog.Error("Specified cluster config does not exist")
-		return nil, fmt.Errorf("Specified cluster config does not exist")
-	}
 	slog.Info(
 		"Requesting Connection",
-		"Cluster", cluster.Name,
+		"Cluster", clusterAddr,
 		"Database", database.Name,
 		"ClientPid", clientPid,
 	)
-	response := requester.RequestConnection(database.Name, cluster.Name, clientPid)
+	response := requester.RequestConnection(database.Name, clusterAddr, clientPid)
 
 	switch response.Result {
 	case RESULT_SUCCESS:
@@ -144,7 +138,7 @@ func getServerConnection(
 			protocol.NOTICE_KIND_SEVERITY_NONLOCALIZED: "ERROR",
 			protocol.NOTICE_KIND_SEVERITY_LOCALIZED:    "ERROR",
 			protocol.NOTICE_KIND_CODE:                  "08000",
-			protocol.NOTICE_KIND_MESSAGE:               fmt.Sprintf("Failed to open connection to cluster %s for database %s", cluster.Name, database.Name),
+			protocol.NOTICE_KIND_MESSAGE:               fmt.Sprintf("Failed to open connection to cluster %s for database %s", clusterAddr, database.Name),
 			protocol.NOTICE_KIND_DETAIL:                response.Detail.Error(),
 		}
 		errMsg := protocol.BuildErrorResponsePgMessage(params)
@@ -154,7 +148,7 @@ func getServerConnection(
 
 	slog.Info(
 		"Recieved Connection",
-		"Cluster", cluster.Name,
+		"Cluster", clusterAddr,
 		"Database", database.Name,
 		"ConnectionPid", response.Conn.GetBackendPid(),
 	)
@@ -188,7 +182,7 @@ func handleQuery(
 ) {
 	// Get a connection from the pool
 	cluster := database.Clusters[0]
-	server, err := getServerConnection(requester, database, cluster.Host, cluster.Port, client.Ctx.ClientPid)
+	server, err := getServerConnection(requester, database, cluster.GetAddr(), client.Ctx.ClientPid)
 	if err != nil {
 		if errMsg, ok := err.(*protocol.ErrorResponsePgMessage); ok {
 			client.Write(buildErrorResponsePacket(errMsg))
@@ -200,7 +194,7 @@ func handleQuery(
 	}
 
 	// ensure we return the connection to the pool
-	defer requester.ReturnConnection(server, database.Name, database.Clusters[0].Name, client.Ctx.ClientPid)
+	defer requester.ReturnConnection(server, database.Name, cluster.GetAddr(), client.Ctx.ClientPid)
 
 	server.IssueQuery(query)
 
@@ -257,7 +251,19 @@ func ConnectionLoop(conn net.Conn, config *SpannerConfig, connectionRequester *C
 		slog.Error("Error Unpacking startup message", "error", err)
 		return
 	}
-	database, _ := config.GetDatabaseConfigByName(startPgMessage.Database)
+	database, ok := config.GetDatabaseConfigByName(startPgMessage.Database)
+	if !ok {
+		slog.Error("Database not found", "database", startPgMessage.Database)
+		errMsg := protocol.BuildErrorResponsePgMessage(map[string]string{
+			protocol.NOTICE_KIND_SEVERITY_NONLOCALIZED: "FATAL",
+			protocol.NOTICE_KIND_SEVERITY_LOCALIZED:    "FATAL",
+			protocol.NOTICE_KIND_CODE:                  "08000",
+			protocol.NOTICE_KIND_MESSAGE:               fmt.Sprintf("Database %s not found", startPgMessage.Database),
+			protocol.NOTICE_KIND_DETAIL:                "",
+		})
+		conn.Write(errMsg.Pack())
+		return
+	}
 
 	ctx := NewClientConnectionContext(startPgMessage, database, clientPid)
 	clientConnection.Ctx = ctx
@@ -282,7 +288,7 @@ func ConnectionLoop(conn net.Conn, config *SpannerConfig, connectionRequester *C
 		case protocol.FMESSAGE_CANCEL:
 			slog.Info("Recieved Cancel Request with no query running. Ignoring")
 		case protocol.FMESSAGE_TERMINATE:
-			slog.Info("Terminating client connection")
+			slog.Info("Terminating client connection", "clientPid", clientPid)
 			return
 		case protocol.BMESSAGE_ERROR_RESPONSE:
 			errorPgMessage := &protocol.ErrorResponsePgMessage{}
