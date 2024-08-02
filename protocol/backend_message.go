@@ -155,7 +155,7 @@ func BuildAuthenticationSASLContinuePgMessage(data []byte) *AuthenticationSASLCo
 func (m *AuthenticationSASLContinuePgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLContinuePgMessage, error) {
 	idx := 0
 	idx += 4 // Skip the auth indicator
-	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data))
+	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data)-idx)
 	if err != nil {
 		return nil, err
 	}
@@ -189,7 +189,7 @@ func BuildAuthenticationSASLFinalPgMessage(data []byte) *AuthenticationSASLFinal
 func (m *AuthenticationSASLFinalPgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLFinalPgMessage, error) {
 	idx := 0
 	idx += 4 // Skip the auth indicator
-	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data))
+	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data)-idx)
 	if err != nil {
 		return nil, err
 	}

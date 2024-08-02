@@ -112,7 +112,7 @@ func (s *ServerConnection) Close() {
 
 func handleStartup(
 	server *ServerConnection,
-) *ServerConnection {
+) (*ServerConnection, error) {
 	for {
 		raw_message, err := protocol.GetRawPgMessage(server.Conn)
 		if err != nil {
@@ -123,7 +123,11 @@ func handleStartup(
 
 		switch raw_message.Kind {
 		case protocol.BMESSAGE_AUTH:
-			handleServerAuth(server.Conn, clusterConfig, raw_message)
+			err = handleServerAuth(server.Conn, clusterConfig, raw_message)
+			if err != nil {
+				slog.Error("Error handling server auth in startup", "error", err)
+				return nil, err
+			}
 		case protocol.BMESSAGE_PARAMETER_STATUS:
 			parameterMessage := &protocol.ParameterStatusPgMessage{}
 			parameterMessage, err = parameterMessage.Unpack(raw_message)
@@ -146,10 +150,10 @@ func handleStartup(
 			}
 			server.Context.ServerIdentity = serverIdentity
 		case protocol.BMESSAGE_READY_FOR_QUERY:
-			return server
+			return server, nil
 		default:
 			slog.Error("Unknown message type", "kind", raw_message.Kind)
-			return nil
+			return nil, fmt.Errorf("Unknown message type %d", raw_message.Kind)
 		}
 	}
 
@@ -161,12 +165,13 @@ func CreateUnititializedServerConnection(
 ) (*ServerConnection, error) {
 	serverContext := newServerConnectionContext(clusterConfig, databaseConfig)
 	addrs, err := net.LookupHost(clusterConfig.Host)
+	fmt.Println(addrs)
 	if err != nil {
 		return nil, err
 	}
 
 	hostAddr := net.TCPAddr{
-		IP:   net.ParseIP(addrs[0]),
+		IP:   net.ParseIP(addrs[1]),
 		Port: clusterConfig.Port,
 	}
 
@@ -196,8 +201,14 @@ func CreateServerConnection(
 	startupMessage := protocol.BuildStartupMessage(clusterConfig.User, clusterConfig.Name)
 	server.Write(startupMessage.Pack())
 
-	server = handleStartup(server)
+	server, err = handleStartup(server)
 	if err != nil {
+		slog.Error(
+			"Error during startup of server conn",
+			"error", err,
+			"cluster", clusterConfig.GetAddr(),
+			"database", databaseConfig.Name,
+		)
 		return nil, err
 	}
 

@@ -224,7 +224,7 @@ func (m *SASLInitialResponsePgMessage) Unpack(message *RawPgMessage) (*SASLIniti
 }
 
 func (m SASLInitialResponsePgMessage) Pack() []byte {
-	messageLength := 4 + len(m.Mechanism) + 4 + len(m.Response) // length + mechanism + null terminator + response
+	messageLength := 4 + len(m.Mechanism) + 1 + 4 + len(m.Response) // length + mechanism + null terminator + response length + response
 
 	out := make([]byte, messageLength+1)
 

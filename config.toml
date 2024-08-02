@@ -1,5 +1,5 @@
 ListenPort = 8000
-ListenAddr = "0.0.0.0"
+ListenAddr = "localhost"
 
 # Database Configuration for "test"
 [[databases]]
@@ -10,9 +10,9 @@ authMethod = "md5"
 
 [[databases.clusters]]
 name = "postgres"
-host = "postgres1"
-port = 5432
-user = "postgres"
+host = "localhost"
+port = 6000
+user = "root"
 passwordEnv = "PG_PASSWORD_1"
 
 [[databases.clusters]]
