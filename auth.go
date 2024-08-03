@@ -27,18 +27,21 @@ const (
 	SHA256_BLOCK_SIZE = 32
 )
 
-func mapContainsKey[K comparable, V any](m map[K]V, key K) bool {
-	_, ok := m[key]
-	return ok
-}
-
 // Functions for handling authentication with the server
 func saslPrep(input string) []byte {
 	return []byte(input)
 }
 
+// We only support SCRAM-SHA-256 for now
 func getSupportedSASLMechanisms() []string {
 	return []string{"SCRAM-SHA-256"}
+}
+
+// Parse the integer from an auth message to determine the type of authentication
+func parseAuthIndicator(rawMessage *protocol.RawPgMessage) int {
+	idx, authIndicator := parsing.ParseInt32(rawMessage.Data, 0)
+	rawMessage.Data = rawMessage.Data[idx:]
+	return authIndicator
 }
 
 func generateNonce(length int) []byte {
@@ -51,10 +54,11 @@ func generateNonce(length int) []byte {
 	rand.Read(nonce)
 	// Base64 encode the nonce to make it ASCII
 	base64.StdEncoding.Encode(dst, nonce)
-	return dst
 
+	return dst
 }
 
+// Parse the data out of a SASL message
 func parseSASLData(data []byte) (map[byte][]byte, error) {
 	saslData := make(map[byte][]byte)
 	parts := bytes.Split(data, []byte{','})
@@ -69,58 +73,16 @@ func parseSASLData(data []byte) (map[byte][]byte, error) {
 	return saslData, nil
 }
 
-func scramSaltedPassword(password []byte, salt []byte, iterations int, ctx *SaslContext) []byte {
-	one := []byte{0, 0, 0, 1}
-
-	// Write the pass, salt, and one to the HMAC
-	mac := hmac.New(ctx.hashFunc, password)
-	mac.Write(salt)
-	mac.Write(one)
-	unInitPrev := mac.Sum(nil)
-
-	// Do not need to copy the slice since we dont modify
-	// unInitPrev we just replace its with another slice
-	result := unInitPrev
-
-	// iterate for the remaining iterations - 1 times
-	for i := 1; i < iterations; i++ {
-		mac.Reset()
-		mac.Write(unInitPrev)
-		unInitPrev = mac.Sum(nil)
-		for j := 0; j < SHA256_BLOCK_SIZE; j++ {
-			result[j] ^= unInitPrev[j]
-		}
-	}
-	return result
-}
-
-func scramClientKey(saltedPassword []byte) []byte {
-	mac := hmac.New(sha256.New, saltedPassword)
+func scramClientKey(saltedPassword []byte, hashFunc func() hash.Hash) []byte {
+	mac := hmac.New(hashFunc, saltedPassword)
 	mac.Write([]byte("Client Key"))
 	return mac.Sum(nil)
 }
 
-func buildServerFirstMessage(
-	salt []byte,
-	iterations int,
-	fullNonce []byte,
-) []byte {
-	// convert the iterations to a byte slice
-	iterationsBytes := []byte(strconv.Itoa(iterations))
-	// Calculate the length of the whole server first message
-	msgLen := 2 + len(fullNonce) + 3 + len(salt) + 3 + len(iterationsBytes)
-	// Allocate a buffer for the server first message
-	serverFirstMessage := make([]byte, msgLen)
-	// Build the server first message
-	idx := 0
-	idx = parsing.WriteBytes(serverFirstMessage, idx, []byte("r="))
-	idx = parsing.WriteBytes(serverFirstMessage, idx, fullNonce)
-	idx = parsing.WriteBytes(serverFirstMessage, idx, []byte(",s="))
-	idx = parsing.WriteBytes(serverFirstMessage, idx, salt)
-	idx = parsing.WriteBytes(serverFirstMessage, idx, []byte(",i="))
-	idx = parsing.WriteBytes(serverFirstMessage, idx, iterationsBytes)
-
-	return serverFirstMessage
+func scramServerKey(saltedPassword []byte, hashFunc func() hash.Hash) []byte {
+	mac := hmac.New(hashFunc, saltedPassword)
+	mac.Write([]byte("Server Key"))
+	return mac.Sum(nil)
 }
 
 func initializeProofMessage(serverNonce []byte) (int, []byte) {
@@ -130,73 +92,12 @@ func initializeProofMessage(serverNonce []byte) (int, []byte) {
 	saslResponseBuffer := make([]byte, 256)
 
 	idx := 0
-	// "c=biws" -> base64("n,,n=")ntNonce
+	// "c=biws" -> base64("n,,n=")
 	// Write initial data plus the server nonce
 	idx, saslResponseBuffer = parsing.WriteBytesSafe(saslResponseBuffer, idx, []byte("c=biws,r="))
 	idx, saslResponseBuffer = parsing.WriteBytesSafe(saslResponseBuffer, idx, serverNonce)
 
 	return idx, saslResponseBuffer
-}
-
-func buildClientBareFirstMessage(clientNonce []byte) []byte {
-	clientFirstMessageBare := []byte("n=,r=")
-	clientFirstMessageBare = append(clientFirstMessageBare, clientNonce...)
-	return clientFirstMessageBare[:len(clientNonce)+5]
-}
-
-func verifyServerSignature(serverSignature []byte, ctx *SaslContext) bool {
-	// TODO: Implement server signature verification
-	return true
-}
-
-func calculateClientProof(
-	saltedPassword []byte,
-	iterations int,
-	clientBareFirstMessage []byte,
-	serverFirstMessage []byte,
-	messageWithoutProof []byte,
-	ctx *SaslContext,
-) []byte {
-	// Calculate the client key from the salted password
-	clientKey := scramClientKey(saltedPassword)
-
-	// Calculate the stored key from the client key
-	hash := ctx.hashFunc()
-	hash.Write(clientKey)
-	storedKey := hash.Sum(nil)
-
-	// Start a new HMAC with the stored key as its key
-	mac := hmac.New(ctx.hashFunc, storedKey)
-
-	// Write the original message without channel binding info
-	mac.Write(clientBareFirstMessage)
-
-	// Write a comma
-	mac.Write([]byte{','})
-
-	// Write the server first message
-	mac.Write(serverFirstMessage)
-
-	// Write a comma
-	mac.Write([]byte{','})
-
-	// Write the message without the proof
-	mac.Write(messageWithoutProof)
-
-	// Sum to get the client signature
-	clientSignature := mac.Sum(nil)
-
-	// XOR the client key with the client signature
-	for i := 0; i < len(clientKey); i++ {
-		clientKey[i] ^= clientSignature[i]
-	}
-
-	// Base64 encode the client key to get the client proof
-	clientProof := make([]byte, base64.StdEncoding.EncodedLen(len(clientKey)))
-	base64.StdEncoding.Encode(clientProof, clientKey)
-
-	return clientProof
-
 }
 
 type SaslContext struct {
@@ -222,15 +123,85 @@ type SaslContext struct {
 	clientProof []byte
 }
 
-func handleSASLIntitialRequest(
-	conn net.Conn,
-	rawMessage *protocol.RawPgMessage,
-	ctx *SaslContext,
-) ([]byte, error) {
+func (ctx *SaslContext) scramSaltedPassword(password []byte) {
+	one := []byte{0, 0, 0, 1}
+
+	// Write the pass, salt, and one serverSignatureto the HMAC
+	mac := hmac.New(ctx.hashFunc, password)
+	mac.Write(ctx.salt)
+	mac.Write(one)
+	unInitPrev := mac.Sum(nil)
+
+	// Do not need to copy the slice since we dont modify
+	// unInitPrev we just replace its with another slice
+	result := unInitPrev
+
+	// iterate for the remaining iterations - 1 times
+	for i := 1; i < ctx.iterations; i++ {
+		mac.Reset()
+		mac.Write(unInitPrev)
+		unInitPrev = mac.Sum(nil)
+		for j := 0; j < SHA256_BLOCK_SIZE; j++ {
+			result[j] ^= unInitPrev[j]
+		}
+	}
+
+	ctx.saltedPassword = result
+}
+
+func (ctx *SaslContext) calculateServerSignature() []byte {
+	// Calculate the server key from the salted password
+	serverKey := scramServerKey(ctx.saltedPassword, ctx.hashFunc)
+
+	// Calculate the sever signature
+	mac := hmac.New(ctx.hashFunc, serverKey)
+	mac.Write(ctx.clientFirstMessageBare)
+	mac.Write([]byte{','})
+	mac.Write(ctx.serverFirstResponse)
+	mac.Write([]byte{','})
+	mac.Write(ctx.clientChallengeResponseWithoutProof)
+	serverSignatureExpected := mac.Sum(nil)
+
+	b64ServerSignatureExpected := make([]byte, base64.StdEncoding.EncodedLen(len(serverSignatureExpected)))
+	base64.StdEncoding.Encode(b64ServerSignatureExpected, serverSignatureExpected)
+
+	return b64ServerSignatureExpected
+}
+
+func (ctx *SaslContext) calculateClientProof() {
+	// Calculate the client key from the salted password
+	clientKey := scramClientKey(ctx.saltedPassword, ctx.hashFunc)
+
+	// Calculate the stored key from the client key
+	hash := ctx.hashFunc()
+	hash.Write(clientKey)
+	storedKey := hash.Sum(nil)
+
+	// Calculate the client signature
+	mac := hmac.New(ctx.hashFunc, storedKey)
+	mac.Write(ctx.clientFirstMessageBare)
+	mac.Write([]byte{','})
+	mac.Write(ctx.serverFirstResponse)
+	mac.Write([]byte{','})
+	mac.Write(ctx.clientChallengeResponseWithoutProof)
+	clientSignature := mac.Sum(nil)
+
+	// Calculate the client proof from the client key and the client signature
+	for i := 0; i < len(clientKey); i++ {
+		clientKey[i] ^= clientSignature[i]
+	}
+
+	clientProof := make([]byte, base64.StdEncoding.EncodedLen(len(clientKey)))
+	base64.StdEncoding.Encode(clientProof, clientKey)
+
+	ctx.clientProof = clientProof
+}
+
+func handleSASLIntitialRequest(conn net.Conn, rawMessage *protocol.RawPgMessage, ctx *SaslContext) error {
 	authSASLRequest := &protocol.AuthenticationSASLPgMessage{}
 	authSASLRequest, err := authSASLRequest.Unpack(rawMessage)
 	if err != nil {
-		return []byte{}, err
+		return err
 	}
 
 	idx := 0
@@ -252,7 +223,7 @@ func handleSASLIntitialRequest(
 	case "SCRAM-SHA-256":
 		ctx.hashFunc = sha256.New
 	default:
-		return []byte{}, errors.New("No supported SASL mechanism")
+		return errors.New("No supported SASL mechanism")
 	}
 
 	// formulate the scram-sha-256 initial response
@@ -267,30 +238,28 @@ func handleSASLIntitialRequest(
 	idx = parsing.WriteBytes(responseData, idx, []byte("n="))
 
 	// Write the base64 encoded client Nonce
-	clientNonce := generateNonce(18)
+	ctx.clientNonce = generateNonce(18)
 	idx = parsing.WriteBytes(responseData, idx, []byte(",r="))
-	idx = parsing.WriteBytes(responseData, idx, clientNonce)
+	idx = parsing.WriteBytes(responseData, idx, ctx.clientNonce)
 	responseData = responseData[:idx]
 
-	// Update the context
-	ctx.clientNonce = clientNonce
+	// Save the client first message without channel binding info
 	ctx.clientFirstMessageBare = responseData[noBindingIdx:]
 
 	saslInitialResponse := protocol.BuildSASLInitialResponseMessage(chosenMechanism, responseData)
 	conn.Write(saslInitialResponse.Pack())
 
-	return clientNonce, nil
+	return nil
 }
 
 func handleSASLContinue(
 	conn net.Conn,
 	rawMessage *protocol.RawPgMessage,
-	clientNonce []byte,
 	password string,
 	ctx *SaslContext,
 ) error {
-	// record the server first response
-	ctx.serverFirstResponse = bytes.TrimSpace(bytes.Trim(rawMessage.Data, "\x00"))
+	// record the server first response. The raw message
+	ctx.serverFirstResponse = rawMessage.Data
 
 	authSASLContinue := &protocol.AuthenticationSASLContinuePgMessage{}
 	authSASLContinue, err := authSASLContinue.Unpack(rawMessage)
@@ -305,13 +274,11 @@ func handleSASLContinue(
 	}
 
 	// Verify the server nonce
-	serverNonce := saslDataMap['r']
-	if !bytes.HasPrefix(serverNonce, clientNonce) {
+	ctx.serverNonce = saslDataMap['r']
+	if !bytes.HasPrefix(ctx.serverNonce, ctx.clientNonce) {
 		slog.Error("Failed SASL auth, server nonce does not match client nonce")
 		return errors.New("Server nonce does not match client nonce")
 	}
-	// record the server nonce
-	ctx.serverNonce = serverNonce
 
 	// Decode the server salt
 	encodedSalt := saslDataMap['s']
@@ -321,19 +288,15 @@ func handleSASLContinue(
 		slog.Error("Failed to decode server salt")
 		return err
 	}
-	decodedSalt := bytes.Trim(serverSalt, "\x00")
-	// record the salt
-	ctx.salt = decodedSalt
+	ctx.salt = bytes.Trim(serverSalt, "\x00")
 
-	serverIterations, err := strconv.Atoi(string(saslDataMap['i']))
+	ctx.iterations, err = strconv.Atoi(string(saslDataMap['i']))
 	if err != nil {
 		slog.Error("Failed to parse server iterations")
 		return err
 	}
-	// record the iterations
-	ctx.iterations = serverIterations
 
-	idx, saslResponseBuffer := initializeProofMessage(serverNonce)
+	idx, saslResponseBuffer := initializeProofMessage(ctx.serverNonce)
 
 	// Copy the client challenge response without the proof
 	// since we will still need to update the saslResponseBuffer
@@ -343,28 +306,14 @@ func handleSASLContinue(
 	// Prep the password for the SCRAM-SHA-256 algorithm
 	saslPreppedPassword := saslPrep(password)
 	// Salt the password `iterations` times (usually 4096)
-	saltedPassword := scramSaltedPassword(
+	ctx.scramSaltedPassword(
 		saslPreppedPassword,
-		decodedSalt,
-		serverIterations,
-		ctx,
 	)
-	// record the salted password
-	ctx.saltedPassword = saltedPassword
-
 	// Calculate the client proof
-	clientProof := calculateClientProof(
-		saltedPassword,
-		serverIterations,
-		ctx.clientFirstMessageBare,
-		ctx.serverFirstResponse,
-		saslResponseBuffer,
-		ctx,
-	)
-	ctx.clientProof = clientProof
+	ctx.calculateClientProof()
 
 	idx, saslResponseBuffer = parsing.WriteBytesSafe(saslResponseBuffer, idx, []byte(",p="))
-	idx, saslResponseBuffer = parsing.WriteBytesSafe(saslResponseBuffer, idx, []byte(clientProof))
+	idx, saslResponseBuffer = parsing.WriteBytesSafe(saslResponseBuffer, idx, []byte(ctx.clientProof))
 
 	saslResponseBuffer = saslResponseBuffer[:idx]
 
@@ -391,15 +340,17 @@ func handleSASLFinal(conn net.Conn, rawMessage *protocol.RawPgMessage, ctx *Sasl
 		return errors.New("Server returned an invalid SASL final message")
 	}
 
-	if mapContainsKey[byte, []byte](serverData, 'e') {
+	if _, ok := serverData['e']; !ok {
 		slog.Error("Server returned an error in the final SASL message")
 		return errors.New(string(serverData['e']))
 	}
 
 	serverSignature := serverData['v']
-	if !verifyServerSignature(serverSignature, ctx) {
+	expectedServerSignature := ctx.calculateServerSignature()
+	if !bytes.Equal(serverSignature, expectedServerSignature) {
 		return errors.New("Server signature verification failed")
 	}
+	slog.Debug("Server signature verification passed")
 
 	return nil
 }
@@ -413,7 +364,7 @@ func handleSASLAuth(
 	ctx := &SaslContext{}
 	currentState := "BuildIntialResponse"
 	// Save the client nonce to verify the server's response
-	clientNonce, err := handleSASLIntitialRequest(conn, rawMessage, ctx)
+	err := handleSASLIntitialRequest(conn, rawMessage, ctx)
 	if err != nil {
 		slog.Error("Error handling SASL initial request", "state", currentState)
 		return err
@@ -423,13 +374,14 @@ func handleSASLAuth(
 	for {
 		rawMessage, err = protocol.GetRawPgMessage(conn)
 		if err != nil {
-			slog.Error("Error SASL message from server", "state", currentState)
+			slog.Error("Error getting SASL message from server", "state", currentState)
+			return err
 		}
 
 		var authIndicator int
 		switch rawMessage.Kind {
 		case protocol.BMESSAGE_AUTH:
-			_, authIndicator = parsing.ParseInt32(rawMessage.Data, 0)
+			authIndicator = parseAuthIndicator(rawMessage)
 			if err != nil {
 				slog.Error("Error reading SASL authentication indicator", "state", currentState)
 				return err
@@ -438,13 +390,14 @@ func handleSASLAuth(
 			case protocol.AUTH_SASL_CONTINUE:
 				currentState = "BuildSASLResponse"
 				password := os.Getenv(clusterConfig.PasswordEnv)
-				err = handleSASLContinue(conn, rawMessage, clientNonce, password, ctx)
+				err = handleSASLContinue(conn, rawMessage, password, ctx)
 				if err != nil {
 					slog.Error("Error calculating client Response to challenge", "state", currentState)
 					return err
 				}
 				currentState = "ReadSaslFinal"
 				// back to the top of the loop
+				break
 			case protocol.AUTH_SASL_FINAL:
 				currentState = "BuildSASLFinal"
 				err = handleSASLFinal(conn, rawMessage, ctx)
@@ -452,8 +405,7 @@ func handleSASLAuth(
 					slog.Error("Error handling SASL final message", "state", currentState)
 					return err
 				}
-				currentState = "SASLAuthComplete"
-				slog.Info("SASL authentication complete", "state", currentState)
+				slog.Debug("SASL authentication complete")
 				return nil
 			default:
 				slog.Error(
@@ -464,7 +416,7 @@ func handleSASLAuth(
 				return errors.New("Unknown SASL authentication indicator")
 			}
 		case protocol.BMESSAGE_ERROR_RESPONSE:
-			slog.Error("Error response from server", "state", currentState)
+			slog.Error("Error response from server in SASL", "state", currentState)
 			break
 		default:
 			slog.Error(
@@ -506,17 +458,62 @@ func getMd5Password(password string, username string, salt []byte) string {
 	return "md5" + hex.EncodeToString(md5Bytes[:])
 }
 
-func handleMD5Auth(conn net.Conn, clusterConfig *ClusterConfig, rawMessage *protocol.RawPgMessage) {
+func handleMD5Auth(conn net.Conn, clusterConfig *ClusterConfig, rawMessage *protocol.RawPgMessage) error {
 	md5Message := &protocol.AuthenticationMD5PasswordPgMessage{}
 	md5Message, err := md5Message.Unpack(rawMessage)
 	if err != nil {
-		panic(err)
+		slog.Error("Error unpacking MD5 authentication message")
+		return err
 	}
 
 	password := os.Getenv(clusterConfig.PasswordEnv)
 	md5Password := getMd5Password(password, clusterConfig.User, md5Message.Salt)
 	md5PasswordMessage := protocol.BuildPasswordMessage(md5Password)
 	conn.Write(md5PasswordMessage.Pack())
+
+	rawMessage, err = protocol.GetRawPgMessage(conn)
+	if err != nil {
+		slog.Error("Error reading MD5 authentication response")
+		return err
+	}
+
+	switch rawMessage.Kind {
+	case protocol.BMESSAGE_AUTH:
+		authIndicator := parseAuthIndicator(rawMessage)
+		switch authIndicator {
+		case protocol.AUTH_OK:
+			break
+		default:
+			slog.Error("Unexpected MD5 authentication response", "indicator", authIndicator)
+			return protocol.MakeConnectionErrorMessages(
+				"Unexpected MD5 authentication response",
+				fmt.Sprintf("Recieved message with indicator of: %d", authIndicator),
+				"08000",
+				"handleMD5Auth",
+			)
+		}
+		break
+	case protocol.BMESSAGE_ERROR_RESPONSE:
+		serverError := &protocol.ErrorResponsePgMessage{}
+		serverError, err = serverError.Unpack(rawMessage)
+		slog.Error("Error response from server in MD5 authentication")
+		return protocol.MakeConnectionErrorMessages(
+			"Server side MD5 authentication failed",
+			serverError.Error(),
+			serverError.GetErrorResponseField(protocol.NOTICE_KIND_CODE),
+			"handleMD5Auth",
+		)
+	default:
+		slog.Error("Unexpected message type", "kind", rawMessage.Kind)
+		return protocol.MakeConnectionErrorMessages(
+			"Unexpected message type in MD5 authentication",
+			fmt.Sprintf("Recieved message with kind of: %d", rawMessage.Kind),
+			"08000",
+			"handleMD5Auth",
+		)
+	}
+
+	return nil
 }
 
 func handleServerAuth(
@@ -524,44 +521,54 @@ func handleServerAuth(
 	clusterConfig *ClusterConfig,
 	rawMessage *protocol.RawPgMessage,
 ) error {
-	_, authIndicator := parsing.ParseInt32(rawMessage.Data, 0)
+
+	authIndicator := parseAuthIndicator(rawMessage)
+	var errMsg *protocol.ErrorResponsePgMessage
+	var ok bool
 
 	switch authIndicator {
 	case protocol.AUTH_OK:
-		// No authentication required
+		break
 	case protocol.AUTH_MD5_PASSWORD:
-		handleMD5Auth(conn, clusterConfig, rawMessage)
+		err := handleMD5Auth(conn, clusterConfig, rawMessage)
+		if err != nil {
+			slog.Error("Error handling MD5 authentication", "error", err)
+			errMsg, ok = err.(*protocol.ErrorResponsePgMessage)
+			if !ok {
+				return protocol.MakeConnectionErrorMessages(
+					"Server side MD5 authentication failed",
+					err.Error(),
+					"08000",
+					"handleServerAuth",
+				)
+			}
+			return errMsg
+		}
+		slog.Info("MD5 authentication complete")
 	case protocol.AUTH_SASL:
 		err := handleSASLAuth(conn, clusterConfig, rawMessage)
 		if err != nil {
 			slog.Error("Error handling SASL authentication", "error", err)
-			errMsg := protocol.BuildErrorResponsePgMessage(
-				map[string]string{
-					"Localized Severity":    "Error",
-					"Nonlocalized Severity": "ERROR",
-					"Message":               "Server side SASL authentication failed",
-					"Detail":                err.Error(),
-					"Code":                  "08000",
-					"Hint":                  "Check the pgspanner server logs for more information",
-					"Routine":               "handleServerAuth",
-				},
-			)
+			errMsg, ok = err.(*protocol.ErrorResponsePgMessage)
+			if !ok {
+				return protocol.MakeConnectionErrorMessages(
+					"Server side SASL authentication failed",
+					err.Error(),
+					"08000",
+					"handleServerAuth",
+				)
+			}
 			return errMsg
 		}
 	default:
 		slog.Error("Unsupported authentication type", "indicator", authIndicator)
-		errMsg := protocol.BuildErrorResponsePgMessage(
-			map[string]string{
-				"Localized Severity":    "Error",
-				"Nonlocalized Severity": "ERROR",
-				"Message":               "Unknown server authentication type",
-				"Detail":                fmt.Sprintf("Recieved message with authtype of: %d", authIndicator),
-				"Code":                  "28000",
-				"Hint":                  "Check the pgspanner server logs for more information",
-				"Routine":               "handleServerAuth",
-			},
+		return protocol.MakeConnectionErrorMessages(
+			"Unkown authentication type",
+			fmt.Sprintf("Recieved message with authtype of: %d", authIndicator),
+			"08000",
+			"handleServerAuth",
 		)
-		return errMsg
+
 	}
 	return nil
 }

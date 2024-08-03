@@ -103,7 +103,6 @@ func (m *AuthenticationSASLPgMessage) Unpack(message *RawPgMessage) (*Authentica
 	var err error
 	var mechanism string
 	idx := 0
-	idx += 4 // Skip the auth indicator
 
 	// In most cases the server will return 2 mechanisms
 	// * SCRAM-SHA-256
@@ -154,7 +153,6 @@ func BuildAuthenticationSASLContinuePgMessage(data []byte) *AuthenticationSASLCo
 // Postgres Message interface implementation for AuthenticationSASLContinuePgMessage
 func (m *AuthenticationSASLContinuePgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLContinuePgMessage, error) {
 	idx := 0
-	idx += 4 // Skip the auth indicator
 	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data)-idx)
 	if err != nil {
 		return nil, err
@@ -188,7 +186,6 @@ func BuildAuthenticationSASLFinalPgMessage(data []byte) *AuthenticationSASLFinal
 // Postgres Message interface implementation for AuthenticationSASLFinalPgMessage
 func (m *AuthenticationSASLFinalPgMessage) Unpack(message *RawPgMessage) (*AuthenticationSASLFinalPgMessage, error) {
 	idx := 0
-	idx += 4 // Skip the auth indicator
 	idx, data, err := parsing.ParseBytes(message.Data, idx, len(message.Data)-idx)
 	if err != nil {
 		return nil, err
@@ -569,11 +566,20 @@ type ErrorResponsePgMessage struct {
 }
 
 func (m *ErrorResponsePgMessage) GetErrorResponseField(kind string) string {
-	return m.Fields[kind].Value
+	field, ok := m.Fields[kind]
+	if !ok {
+		return ""
+	}
+	return field.Value
 }
 
 func (m *ErrorResponsePgMessage) Error() string {
-	return m.GetErrorResponseField(NOTICE_KIND_MESSAGE)
+	message := m.GetErrorResponseField(NOTICE_KIND_MESSAGE)
+	details := m.GetErrorResponseField(NOTICE_KIND_DETAIL)
+	if details != "" {
+		message += ": " + details
+	}
+	return message
 }
 
 func BuildErrorResponsePgMessage(params map[string]string) *ErrorResponsePgMessage {

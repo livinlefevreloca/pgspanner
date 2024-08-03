@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"log/slog"
 	"os"
 	"time"
 
@@ -21,7 +22,7 @@ func main() {
 	noKeepAlive := flag.Bool("nokeepalive", false, "Enable keep alive")
 	flag.Parse()
 
-	fmt.Println("Keep alive is off:", *noKeepAlive)
+	slog.Info("Keep alive is off", "NoKeepAlive", *noKeepAlive)
 
 	var config SpannerConfig
 	_, err := toml.DecodeFile(*configPath, &config)

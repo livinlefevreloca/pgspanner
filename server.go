@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -116,7 +117,10 @@ func handleStartup(
 	for {
 		raw_message, err := protocol.GetRawPgMessage(server.Conn)
 		if err != nil {
-			panic(err)
+			if err.Error() == "EOF" {
+				err = errors.New("Connection Refused")
+			}
+			return nil, err
 		}
 		clusterConfig := server.GetClusterConfig()
 		databaseConfig := server.Context.Database
@@ -125,6 +129,7 @@ func handleStartup(
 		case protocol.BMESSAGE_AUTH:
 			err = handleServerAuth(server.Conn, clusterConfig, raw_message)
 			if err != nil {
+				fmt.Println(err, err != nil)
 				slog.Error("Error handling server auth in startup", "error", err)
 				return nil, err
 			}
@@ -165,7 +170,6 @@ func CreateUnititializedServerConnection(
 ) (*ServerConnection, error) {
 	serverContext := newServerConnectionContext(clusterConfig, databaseConfig)
 	addrs, err := net.LookupHost(clusterConfig.Host)
-	fmt.Println(addrs)
 	if err != nil {
 		return nil, err
 	}
