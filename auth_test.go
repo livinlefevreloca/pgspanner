@@ -109,6 +109,14 @@ func TestVerifyServerSignature(t *testing.T) {
 
 }
 
+func printBytesAsHex(prefix string, bytes []byte) {
+	fmt.Printf("%s: ", prefix)
+	for _, b := range bytes {
+		fmt.Printf("%02x", b)
+	}
+	fmt.Println()
+}
+
 func matchesBytes(left []byte, right []byte) bool {
 	if !bytes.Equal(left, right) {
 		printBytesAsHex("Got (left)", left)

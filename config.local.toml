@@ -3,17 +3,17 @@ ListenAddr = "localhost"
 
 # Database Configuration for "test"
 [[databases]]
-name = "lyfe"
+name = "test"
 ssl = false
 shouldPool = false
 authMethod = "md5"
 
 [[databases.clusters]]
-name = "lyfe"
-host = "main-postgres.dlaw"
+name = "postgres"
+host = "localhost"
 port = 5432
-user = "postgres"
-passwordEnv = "PG_PASSWORD"
+user = "root"
+passwordEnv = "PG_PASSWORD_1"
 
 [databases.poolSettings]
 maxOpenConns = 10

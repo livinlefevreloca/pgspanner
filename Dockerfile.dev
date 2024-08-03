@@ -9,4 +9,4 @@ RUN cd /go/src/github.com/livinlefevreloca/pgspanner && go build -o /go/bin/pgsp
 COPY config.toml /etc/pgspanner/config.toml
 
 WORKDIR /root/work
-CMD ["/go/bin/pgspanner", "--config", "/etc/pgspanner/config.toml"]
+CMD ["/go/bin/pgspanner", "--config", "/etc/pgspanner/config.toml", "--nokeepalive"]

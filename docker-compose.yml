@@ -6,7 +6,7 @@ services:
         ports:
           - "8000:8000"
         environment:
-          - PG_PASSWORD_1=postgres
+          - PG_PASSWORD_1=root
           - PG_PASSWORD_2=postgres
           - PG_PASSWORD_3=postgres
         volumes:

@@ -19,14 +19,14 @@ CREATE TABLE posts (
 );
 
 COPY public.posts (id, title, body, user_id) FROM STDIN WITH CSV;
-1,title17,body17,12
-2,title18,body18,10
-3,title19,body19,11
-4,title20,body20,10
-5,title21,body21,11
-6,title22,body22,9
-7,title23,body23,9
-8,title24,body24,12
+17,title17,body17,12
+18,title18,body18,1
+19,title19,body19,9
+20,title20,body20,2
+21,title21,body21,6
+22,title22,body22,9
+23,title23,body23,11
+24,title24,body24,3
 \.
 
 CREATE TABLE comments (
@@ -37,16 +37,16 @@ CREATE TABLE comments (
 );
 
 COPY public.comments (id, body, post_id, user_id) FROM STDIN WITH CSV;
-1,comment25,1,9
-2,comment26,2,12
-3,comment27,3,11
-4,comment28,4,9
-5,comment29,5,10
-6,comment30,6,10
-7,comment31,7,12
-8,comment32,8,10
-9,comment33,1,11
-10,comment34,2,9
-11,comment35,3,9
-12,comment36,4,11
+25,comment25,17,9
+26,comment26,14,12
+27,comment27,15,11
+28,comment28,10,9
+29,comment29,11,10
+30,comment30,8,10
+31,comment31,1,12
+32,comment32,2,10
+33,comment33,6,11
+34,comment34,7,9
+35,comment35,12,9
+36,comment36,1,11
 \.

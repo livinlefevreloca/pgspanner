@@ -37,16 +37,16 @@ CREATE TABLE comments (
 );
 
 COPY public.comments (id, body, post_id, user_id) FROM STDIN WITH CSV;
-1,comment1,1,1
-2,comment2,2,2
-3,comment3,3,3
-4,comment4,4,4
-5,comment5,5,1
-6,comment6,6,2
-7,comment7,7,3
-8,comment8,8,4
-9,comment9,1,1
-10,comment10,2,2
-11,comment11,3,3
-12,comment12,4,4
+1,comment1,20,12
+2,comment2,1,10
+3,comment3,13,9
+4,comment4,7,1
+5,comment5,24,11
+6,comment6,22,2
+7,comment7,12,6
+8,comment8,5,4
+9,comment9,2,3
+10,comment10,1,6
+11,comment11,17,10
+12,comment12,18,11
 \.

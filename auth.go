@@ -340,9 +340,9 @@ func handleSASLFinal(conn net.Conn, rawMessage *protocol.RawPgMessage, ctx *Sasl
 		return errors.New("Server returned an invalid SASL final message")
 	}
 
-	if _, ok := serverData['e']; !ok {
+	if data, ok := serverData['e']; ok {
 		slog.Error("Server returned an error in the final SASL message")
-		return errors.New(string(serverData['e']))
+		return errors.New(string(data))
 	}
 
 	serverSignature := serverData['v']

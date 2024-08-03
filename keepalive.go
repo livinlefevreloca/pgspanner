@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"log/slog"
+	"runtime/debug"
 	"time"
 )
 
@@ -10,6 +11,7 @@ func runWithRecovery(componentName string, f func()) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Component paniced, but recovery was posible", "Error", r, "Component", componentName)
+			fmt.Println("Stack Trace: \n", string(debug.Stack()))
 		}
 	}()
 	f()

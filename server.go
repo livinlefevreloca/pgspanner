@@ -174,8 +174,15 @@ func CreateUnititializedServerConnection(
 		return nil, err
 	}
 
+	var IP string
+	if len(addrs) == 2 {
+		IP = addrs[1]
+	} else {
+		IP = addrs[0]
+	}
+
 	hostAddr := net.TCPAddr{
-		IP:   net.ParseIP(addrs[1]),
+		IP:   net.ParseIP(IP),
 		Port: clusterConfig.Port,
 	}
 
